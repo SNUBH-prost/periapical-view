@@ -1,253 +1,210 @@
-"""Infinitt PACS 웹 UI 자동화 스크래퍼.
-
-Playwright를 사용해 Infinitt PACS 워크리스트에서 치근단(IO) 영상을 탐색하고
-DICOM 파일을 다운로드합니다.
-
-주의: PACS UI 셀렉터는 설치 버전에 따라 다를 수 있습니다.
-      config.yaml의 selectors 섹션을 실제 PACS에 맞게 조정하세요.
-"""
+"""Infinitt PACS 설정 자동 탐색 + DICOM 직접 연결 모듈."""
 import logging
-import time
+import subprocess
+import winreg
 from pathlib import Path
-from typing import Iterator
-from urllib.parse import urljoin
-
-from playwright.sync_api import Page, sync_playwright
 
 logger = logging.getLogger(__name__)
 
+# Infinitt 클라이언트 설치 경로 후보
+INFINITT_SEARCH_PATHS = [
+    r"C:\Program Files\Infinitt Healthcare",
+    r"C:\Program Files (x86)\Infinitt Healthcare",
+    r"C:\Infinitt",
+    r"C:\ProgramData\Infinitt",
+    r"C:\Program Files\INFINITT",
+    r"C:\Program Files (x86)\INFINITT",
+]
 
-class InfinittPACSScraper:
-    def __init__(self, cfg: dict):
-        self.cfg = cfg
-        self.pacs = cfg["pacs"]
-        self.search = cfg["search"]
-        self.sel = cfg["selectors"]
-        self.browser_cfg = cfg["browser"]
-        self._page: Page | None = None
-        self._browser = None
-        self._pw = None
+# Infinitt 레지스트리 키 후보
+INFINITT_REG_KEYS = [
+    r"SOFTWARE\Infinitt Healthcare",
+    r"SOFTWARE\INFINITT",
+    r"SOFTWARE\WOW6432Node\Infinitt Healthcare",
+    r"SOFTWARE\WOW6432Node\INFINITT",
+]
 
-    def __enter__(self):
-        self._pw = sync_playwright().start()
-        self._browser = self._pw.chromium.launch(
-            headless=self.browser_cfg.get("headless", False),
-            slow_mo=self.browser_cfg.get("slow_mo", 100),
-            args=["--no-sandbox", "--disable-web-security"],
-        )
-        context = self._browser.new_context(
-            accept_downloads=True,
-            ignore_https_errors=True,
-        )
-        self._page = context.new_page()
-        self._page.set_default_timeout(self.browser_cfg.get("timeout", 30000))
-        return self
 
-    def __exit__(self, *args):
-        if self._browser:
-            self._browser.close()
-        if self._pw:
-            self._pw.stop()
+def find_pacs_settings() -> dict:
+    """PC에서 PACS 서버 설정을 자동으로 탐색합니다."""
+    result = {
+        "host": None,
+        "port": None,
+        "ae_title": None,
+        "source": None,
+        "cache_dirs": [],
+    }
 
-    # ──────────────────────────────────────────────
-    # 로그인
-    # ──────────────────────────────────────────────
+    # 1. 레지스트리에서 탐색
+    reg_result = _search_registry()
+    if reg_result:
+        result.update(reg_result)
+        result["source"] = "registry"
+        logger.info(f"레지스트리에서 PACS 설정 발견: {result}")
 
-    def login(self) -> None:
-        base = self.pacs["url"]
-        login_url = urljoin(base, self.pacs["login_path"])
-        logger.info(f"PACS 로그인 중: {login_url}")
+    # 2. 설정 파일에서 탐색
+    if not result["host"]:
+        file_result = _search_config_files()
+        if file_result:
+            result.update(file_result)
+            result["source"] = "config_file"
 
-        self._page.goto(login_url)
-        self._page.wait_for_load_state("networkidle")
+    # 3. 현재 네트워크 연결에서 탐색 (netstat)
+    if not result["host"]:
+        netstat_result = _search_netstat()
+        if netstat_result:
+            result.update(netstat_result)
+            result["source"] = "netstat"
 
-        s = self.sel["login"]
-        self._page.fill(s["username_field"], self.pacs["username"])
-        self._page.fill(s["password_field"], self.pacs["password"])
-        self._page.click(s["submit_button"])
-        self._page.wait_for_load_state("networkidle")
-        logger.info("로그인 완료")
+    # 4. Infinitt 캐시 폴더 탐색
+    result["cache_dirs"] = _find_infinitt_cache_dirs()
 
-    # ──────────────────────────────────────────────
-    # 워크리스트 검색
-    # ──────────────────────────────────────────────
+    return result
 
-    def navigate_to_worklist(self) -> None:
-        base = self.pacs["url"]
-        wl_url = urljoin(base, self.pacs["worklist_path"])
-        self._page.goto(wl_url)
-        self._page.wait_for_load_state("networkidle")
 
-    def set_search_filters(self) -> None:
-        s = self.sel["worklist"]
-        modality = self.search.get("modality", "IO")
-        date_from = self.search.get("date_from", "")
-        date_to = self.search.get("date_to", "")
-
-        # 모달리티 선택
-        if self._page.locator(s["modality_select"]).count() > 0:
-            self._page.select_option(s["modality_select"], modality)
-            logger.debug(f"모달리티 필터 설정: {modality}")
-
-        # 날짜 범위 설정
-        if date_from and self._page.locator(s["date_from_field"]).count() > 0:
-            self._page.fill(s["date_from_field"], date_from)
-        if date_to and self._page.locator(s["date_to_field"]).count() > 0:
-            self._page.fill(s["date_to_field"], date_to)
-
-        # 검색 실행
-        self._page.click(s["search_button"])
-        self._page.wait_for_load_state("networkidle")
-        logger.info("워크리스트 검색 완료")
-
-    def get_study_count(self) -> int:
-        rows = self._page.locator(self.sel["worklist"]["study_rows"])
-        return rows.count()
-
-    # ──────────────────────────────────────────────
-    # 스터디별 DICOM 다운로드
-    # ──────────────────────────────────────────────
-
-    def iter_studies(self) -> Iterator[dict]:
-        """워크리스트의 각 스터디 정보를 순회."""
-        s = self.sel["worklist"]
-        rows = self._page.locator(s["study_rows"])
-        count = rows.count()
-        max_studies = self.search.get("max_studies", 0)
-        if max_studies > 0:
-            count = min(count, max_studies)
-
-        logger.info(f"총 {count}개 스터디 처리 예정")
-
-        for i in range(count):
-            row = rows.nth(i)
+def _search_registry() -> dict | None:
+    """Windows 레지스트리에서 Infinitt 설정 탐색."""
+    for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+        for key_path in INFINITT_REG_KEYS:
             try:
-                patient_id = self._extract_cell_text(row, "patientId")
-                study_date = self._extract_cell_text(row, "studyDate")
-                study_uid = self._extract_cell_text(row, "studyUID")
-                yield {
-                    "index": i,
-                    "patient_id": patient_id,
-                    "study_date": study_date,
-                    "study_uid": study_uid,
-                    "row_locator": row,
-                }
+                key = winreg.OpenKey(root, key_path)
+                result = _extract_from_reg_key(key)
+                winreg.CloseKey(key)
+                if result:
+                    return result
+            except FileNotFoundError:
+                continue
             except Exception as e:
-                logger.warning(f"스터디 {i} 정보 추출 실패: {e}")
-                continue
+                logger.debug(f"레지스트리 탐색 오류 [{key_path}]: {e}")
+    return None
 
-    def _extract_cell_text(self, row, data_attr: str) -> str:
-        cell = row.locator(f"td[data-col='{data_attr}']")
-        if cell.count() > 0:
-            return cell.first.inner_text().strip()
-        return ""
 
-    def download_study_dicom(self, study: dict, download_dir: Path) -> list[Path]:
-        """스터디를 클릭하고 DICOM 파일을 다운로드."""
-        downloaded = []
-        s = self.sel["worklist"]
-
-        try:
-            # 스터디 행 클릭 → 뷰어 열기
-            link = study["row_locator"].locator(s["study_link"])
-            if link.count() == 0:
-                study["row_locator"].dbl_click()
-            else:
-                link.first.click()
-
-            self._page.wait_for_load_state("networkidle")
-            time.sleep(1)
-
-            downloaded = self._try_export_dicom(download_dir, study)
-
-        except Exception as e:
-            logger.error(f"스터디 다운로드 실패 [{study.get('patient_id')}]: {e}")
-
-        return downloaded
-
-    def _try_export_dicom(self, download_dir: Path, study: dict) -> list[Path]:
-        """PACS 뷰어에서 DICOM 내보내기 시도."""
-        downloaded = []
-        sel = self.sel["viewer"]
-
-        # 방법 1: 내보내기 메뉴 버튼 클릭
-        export_btn = self._page.locator(sel["export_menu"])
-        if export_btn.count() > 0:
-            export_btn.first.click()
-            time.sleep(0.5)
-
-            download_link = self._page.locator(sel["download_dicom"])
-            if download_link.count() > 0:
-                timeout = self.browser_cfg.get("download_timeout", 60000)
-                with self._page.expect_download(timeout=timeout) as dl_info:
-                    download_link.first.click()
-                download = dl_info.value
-                dest = download_dir / (download.suggested_filename or f"{study.get('study_uid', 'study')}.dcm")
-                download.save_as(str(dest))
-                downloaded.append(dest)
-                logger.info(f"다운로드 완료: {dest.name}")
-                return downloaded
-
-        # 방법 2: 네트워크에서 WADO URL 가로채기
-        wado_files = self._intercept_wado_downloads(download_dir, study)
-        downloaded.extend(wado_files)
-
-        return downloaded
-
-    def _intercept_wado_downloads(self, download_dir: Path, study: dict) -> list[Path]:
-        """WADO 요청을 가로채서 DICOM 파일 수동 다운로드."""
-        import requests
-
-        downloaded = []
-        base_url = self.pacs["url"]
-        study_uid = study.get("study_uid", "")
-
-        if not study_uid:
-            return downloaded
-
-        # 일반적인 WADO URL 패턴 시도
-        wado_patterns = [
-            f"{base_url}/wado?requestType=WADO&studyUID={study_uid}",
-            f"{base_url}/wado/rs/studies/{study_uid}",
-            f"{base_url}/infinitt/wado?studyUID={study_uid}",
-        ]
-
-        # 현재 페이지 쿠키를 requests 세션에 전달
-        cookies = {c["name"]: c["value"] for c in self._page.context.cookies()}
-
-        for pattern in wado_patterns:
-            try:
-                resp = requests.get(
-                    pattern,
-                    cookies=cookies,
-                    timeout=30,
-                    verify=False,
-                )
-                if resp.status_code == 200 and resp.content:
-                    dest = download_dir / f"{study_uid}.dcm"
-                    dest.write_bytes(resp.content)
-                    downloaded.append(dest)
-                    logger.info(f"WADO 다운로드 완료: {dest.name}")
-                    break
-            except Exception:
-                continue
-
-        return downloaded
-
-    # ──────────────────────────────────────────────
-    # 대화형 탐색 모드 (셀렉터 디버깅용)
-    # ──────────────────────────────────────────────
-
-    def interactive_inspect(self) -> None:
-        """헤드리스 모드 OFF 상태에서 페이지 구조를 탐색."""
-        logger.info("대화형 탐색 모드. 브라우저 창을 직접 조작하세요.")
-        logger.info("엔터를 눌러 현재 페이지 URL과 주요 요소를 출력합니다. 'q' + 엔터로 종료.")
+def _extract_from_reg_key(key) -> dict | None:
+    host, port, ae = None, None, None
+    try:
+        i = 0
         while True:
-            cmd = input(">> ").strip()
-            if cmd == "q":
+            try:
+                name, value, _ = winreg.EnumValue(key, i)
+                name_lower = name.lower()
+                value_str = str(value).strip()
+                if any(k in name_lower for k in ("server", "host", "ip", "address")):
+                    if _looks_like_ip(value_str) or _looks_like_hostname(value_str):
+                        host = value_str
+                elif any(k in name_lower for k in ("port",)):
+                    try:
+                        port = int(value_str)
+                    except ValueError:
+                        pass
+                elif any(k in name_lower for k in ("ae", "aetitle", "ae_title")):
+                    ae = value_str
+                i += 1
+            except OSError:
                 break
-            print(f"URL: {self._page.url}")
-            # 테이블/폼 요소 탐색
-            for tag in ["table", "input", "select", "button", "a"]:
-                els = self._page.locator(tag)
-                print(f"  <{tag}> count: {els.count()}")
+    except Exception:
+        pass
+
+    if host:
+        return {"host": host, "port": port or 104, "ae_title": ae or "INFINITT"}
+    return None
+
+
+def _search_config_files() -> dict | None:
+    """Infinitt 설치 폴더의 설정 파일 탐색."""
+    import re
+    ip_pattern = re.compile(r"\b(\d{1,3}(?:\.\d{1,3}){3})\b")
+    port_pattern = re.compile(r"[Pp]ort[\"'\s:=]+(\d{2,5})")
+    ae_pattern = re.compile(r"[Aa][Ee][\w]*[\"'\s:=]+([A-Z0-9_\-]{1,16})")
+
+    for base in INFINITT_SEARCH_PATHS:
+        base_path = Path(base)
+        if not base_path.exists():
+            continue
+        for ext in ("*.ini", "*.xml", "*.cfg", "*.config", "*.json", "*.properties"):
+            for f in base_path.rglob(ext):
+                try:
+                    text = f.read_text(encoding="utf-8", errors="ignore")
+                    ips = ip_pattern.findall(text)
+                    private_ips = [
+                        ip for ip in ips
+                        if (ip.startswith("192.168.") or
+                            ip.startswith("10.") or
+                            ip.startswith("172."))
+    ]
+                    if private_ips:
+                        host = private_ips[0]
+                        port_match = port_pattern.search(text)
+                        ae_match = ae_pattern.search(text)
+                        logger.info(f"설정 파일 발견: {f}")
+                        return {
+                            "host": host,
+                            "port": int(port_match.group(1)) if port_match else 104,
+                            "ae_title": ae_match.group(1) if ae_match else "INFINITT",
+                        }
+                except Exception:
+                    continue
+    return None
+
+
+def _search_netstat() -> dict | None:
+    """현재 네트워크 연결에서 DICOM 포트(104, 11112, 2762) 탐색."""
+    dicom_ports = {104, 11112, 2762, 4104, 4242}
+    try:
+        out = subprocess.check_output(
+            ["netstat", "-n"], capture_output=False, timeout=10, text=True
+        )
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) < 3:
+                continue
+            if "ESTABLISHED" not in line and "CLOSE_WAIT" not in line:
+                continue
+            remote = parts[2] if len(parts) > 2 else ""
+            if ":" in remote:
+                ip, port_str = remote.rsplit(":", 1)
+                try:
+                    port = int(port_str)
+                    if port in dicom_ports and _looks_like_ip(ip):
+                        logger.info(f"netstat에서 DICOM 연결 발견: {ip}:{port}")
+                        return {"host": ip, "port": port, "ae_title": "INFINITT"}
+                except ValueError:
+                    continue
+    except Exception as e:
+        logger.debug(f"netstat 탐색 실패: {e}")
+    return None
+
+
+def _find_infinitt_cache_dirs() -> list[str]:
+    """Infinitt 클라이언트가 임시 파일을 저장하는 폴더를 탐색."""
+    import os
+    candidates = []
+
+    # 환경 변수 기반 경로
+    user_profile = os.environ.get("USERPROFILE", r"C:\Users\Default")
+    candidates.extend([
+        Path(user_profile) / "AppData" / "Local" / "Temp",
+        Path(user_profile) / "AppData" / "Local" / "Infinitt",
+        Path(user_profile) / "AppData" / "Roaming" / "Infinitt",
+        Path("C:/ProgramData/Infinitt"),
+        Path("C:/Infinitt/Cache"),
+        Path("C:/Infinitt/Temp"),
+    ])
+
+    # 실제 존재하는 폴더만 반환
+    existing = [str(p) for p in candidates if p.exists()]
+    logger.info(f"발견된 Infinitt 캐시 폴더 ({len(existing)}개): {existing}")
+    return existing
+
+
+def _looks_like_ip(s: str) -> bool:
+    parts = s.split(".")
+    if len(parts) != 4:
+        return False
+    try:
+        return all(0 <= int(p) <= 255 for p in parts)
+    except ValueError:
+        return False
+
+
+def _looks_like_hostname(s: str) -> bool:
+    return bool(s) and " " not in s and len(s) < 64 and not s.startswith("0")

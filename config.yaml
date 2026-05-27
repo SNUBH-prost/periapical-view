@@ -1,87 +1,89 @@
-# Infinitt PACS 접속 설정
-pacs:
-  url: "http://192.168.1.100:8080"   # 내부 PACS 서버 주소
-  username: "your_username"
-  password: "your_password"
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 치근단 방사선 사진 자동 수집 설정 파일
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-  # 로그인 페이지 경로 (Infinitt 버전에 따라 다를 수 있음)
-  login_path: "/infinitt/index.jsp"
+# ── 실행 모드 ────────────────────────────────────────
+# "monitor"  : Infinitt 클라이언트가 열어보는 이미지를 실시간 수집 (권장)
+# "dicom"    : DICOM 프로토콜로 PACS 서버에서 직접 일괄 다운로드
+mode: "monitor"
 
-  # 워크리스트 검색 경로
-  worklist_path: "/infinitt/worklist.jsp"
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# [모드 1] 임시 파일 모니터링 설정 (mode: monitor)
+# Infinitt 클라이언트가 이미지를 열 때 PC에 저장하는
+# 캐시/임시 파일을 감시하여 자동으로 수집합니다.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+monitor:
+  # Infinitt 클라이언트가 임시 파일을 저장하는 폴더들
+  # (find_pacs_config.bat 실행 후 자동으로 채워집니다)
+  watch_dirs:
+    - "C:\\Users\\%USERNAME%\\AppData\\Local\\Temp"
+    - "C:\\ProgramData\\Infinitt"
+    - "C:\\Infinitt"
 
-# 검색 조건
-search:
-  # 치근단 방사선 = 구내 방사선 (Intraoral) → DICOM 모달리티 IO
-  modality: "IO"
+  # 감시할 파일 확장자
+  extensions: [".dcm", ".DCM", ""]   # 확장자 없는 DICOM도 있음
 
-  # 검색할 날짜 범위
-  date_from: "20230101"   # YYYYMMDD
-  date_to: "20251231"
+  # 파일 최소 크기 (bytes) - 너무 작은 파일 무시
+  min_file_size: 10000
 
-  # 스터디 설명 키워드 (없으면 모달리티만으로 필터)
-  # study_description_filter: "periapical"
+  # 새 파일 감지 후 처리 대기 시간 (초) - 파일 쓰기 완료 대기
+  settle_seconds: 2
 
-  # 한 번에 처리할 최대 환자 수 (테스트용 - 전체 수집 시 0으로 설정)
-  max_studies: 0  # 0 = 무제한
+  # 이미 처리한 파일 기록 (재시작해도 중복 처리 안 함)
+  processed_log: "./output/processed_files.txt"
 
-# 출력 설정
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# [모드 2] DICOM 직접 연결 설정 (mode: dicom)
+# find_pacs_config.bat 실행 후 서버 정보가 자동으로 채워집니다.
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+dicom:
+  server:
+    host: ""          # 자동 탐색 후 채워짐 (예: 192.168.1.100)
+    port: 104         # DICOM 기본 포트
+    ae_title: ""      # PACS AE Title (예: INFINITT)
+
+  # 이 PC의 DICOM AE Title (아무 이름이나 가능)
+  calling_ae_title: "PERIAPICAL_SCU"
+
+  # 검색 조건
+  search:
+    modality: "IO"          # IO = 구내방사선(치근단)
+    date_from: "20230101"   # YYYYMMDD
+    date_to: "20251231"
+    max_studies: 0          # 0 = 전체
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# 출력 설정 (두 모드 공통)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 output:
   base_dir: "./output"
+  save_dicom: true          # 비식별화 DICOM 저장
+  save_image: true          # PNG/JPEG 저장
+  image_format: "png"       # "png" 또는 "jpeg"
+  image_quality: 95
 
-  # DICOM 원본 저장 여부
-  save_dicom: true
-  dicom_dir: "dicom"
-
-  # PNG/JPEG 변환 저장
-  save_image: true
-  image_dir: "images"
-  image_format: "png"    # "png" 또는 "jpeg"
-  image_quality: 95      # JPEG 품질 (1-100), PNG는 무시됨
-
-  # 저장 경로 구조: {base_dir}/{image_dir}/{patient_id}/{study_date}/파일명
-  organize_by_patient: true
-
-# DICOM 비식별화 설정 (AI 학습용)
+# DICOM 비식별화 (AI 학습용)
 deidentify:
   enabled: true
-  # 제거할 태그 목록 (환자 식별 정보)
   remove_tags:
     - "PatientName"
     - "PatientBirthDate"
     - "PatientSex"
     - "PatientAge"
     - "PatientAddress"
-    - "PatientTelephoneNumbers"
     - "ReferringPhysicianName"
     - "InstitutionName"
     - "InstitutionAddress"
-  # 환자 ID를 익명 ID로 대체
   anonymize_patient_id: true
 
-# 브라우저 설정
-browser:
-  headless: false    # true: 화면 없이 실행, false: 브라우저 보이게 실행
-  slow_mo: 100       # 액션 사이 대기 시간 (ms) - 너무 빠르면 에러 발생
-  timeout: 30000     # 페이지 로드 타임아웃 (ms)
-  download_timeout: 60000  # 다운로드 타임아웃 (ms)
+# DICOM 필터 (구내방사선만 수집)
+filter:
+  # 모달리티 필터 (비어있으면 모든 모달리티)
+  # IO = 구내방사선, PX = 파노라마, CT = CBCT
+  allowed_modalities: ["IO"]
 
-# Infinitt PACS UI 셀렉터 (버전에 따라 수정 필요)
-# 아래는 일반적인 기본값 - 실제 PACS에 맞게 조정하세요
-selectors:
-  login:
-    username_field: "input[name='userId'], input[type='text']"
-    password_field: "input[name='password'], input[type='password']"
-    submit_button: "input[type='submit'], button[type='submit']"
+  # 스터디 설명 키워드 필터 (비어있으면 모달리티만으로 판단)
+  # description_keywords: ["periapical", "PA", "치근단"]
 
-  worklist:
-    modality_select: "select[name='modality']"
-    date_from_field: "input[name='fromDate']"
-    date_to_field: "input[name='toDate']"
-    search_button: "button#searchBtn, input[value='Search']"
-    study_rows: "table#worklistTable tr.study-row, tr.wl-row"
-    study_link: "a.study-link, td.patientId a"
-
-  viewer:
-    export_menu: "div.export-btn, button.export"
-    download_dicom: "a[onclick*='dicom'], span:text('DICOM')"
+  # 최소 이미지 크기 (픽셀)
+  min_pixel_size: 100
