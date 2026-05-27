@@ -1,7 +1,10 @@
-pynetdicom>=2.1.1
 pydicom>=2.4.4
 Pillow>=10.3.0
 PyYAML>=6.0.1
 tqdm>=4.66.4
 watchdog>=4.0.1
 pywin32>=306
+pywinauto>=0.6.8
+pyautogui>=0.9.54
+mss>=9.0.1
+pynput>=1.7.7

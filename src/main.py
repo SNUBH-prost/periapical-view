@@ -1,22 +1,19 @@
 """치근단 방사선 사진 자동 수집 도구.
 
 실행 모드:
-  python src/main.py                  → config.yaml의 mode 설정에 따라 실행
-  python src/main.py --mode monitor   → Infinitt 클라이언트 임시 파일 감시
+  python src/main.py                  → config.yaml의 mode 설정으로 실행
+  python src/main.py --mode ui        → Infinitt 우클릭 자동화 + 단축키 (기본)
+  python src/main.py --mode monitor   → 임시 파일 폴더 실시간 감시
   python src/main.py --mode dicom     → DICOM 직접 연결 (서버 IP 필요)
   python src/main.py --find-pacs      → PC에서 PACS 서버 설정 자동 탐색
-  python src/main.py --convert-only DICOM_DIR  → 기존 DICOM 폴더 이미지 변환
+  python src/main.py --convert-only DICOM_DIR  → 기존 파일 이미지 변환
 """
 import argparse
 import logging
 import sys
 from pathlib import Path
 
-import pydicom
-from tqdm import tqdm
-
 from config import load_config, get_output_dirs
-from dicom_converter import convert_dicom_to_image, deidentify_dicom, build_study_subpath
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,63 +31,87 @@ def setup_file_logging(log_dir: Path) -> None:
 
 
 def cmd_find_pacs() -> None:
-    """PACS 설정 자동 탐색 후 결과 출력."""
     try:
         from pacs_scraper import find_pacs_settings
-    except ImportError:
-        logger.error("pacs_scraper 모듈을 불러올 수 없습니다. Windows에서만 실행 가능합니다.")
+    except Exception as e:
+        print(f"[오류] {e}")
+        print("Windows 환경에서만 실행 가능합니다.")
         return
 
     print("\n=== PACS 서버 설정 탐색 중... ===\n")
     result = find_pacs_settings()
 
     if result.get("host"):
-        print(f"[발견] 서버 IP   : {result['host']}")
-        print(f"       포트      : {result['port']}")
-        print(f"       AE Title : {result['ae_title']}")
-        print(f"       탐색 출처: {result['source']}")
+        print(f"  서버 IP   : {result['host']}")
+        print(f"  포트      : {result['port']}")
+        print(f"  AE Title : {result['ae_title']}")
+        print(f"  탐색 출처: {result['source']}")
         print()
         print("→ config.yaml의 dicom.server 섹션에 위 값을 입력하고")
-        print("  mode: dicom 으로 변경 후 실행하세요.")
+        print("  mode: dicom 으로 변경 후 run.bat 을 실행하세요.")
     else:
-        print("[결과] PACS 서버 설정을 자동으로 찾지 못했습니다.")
-        print()
-        print("다음 방법을 시도해 보세요:")
-        print("  1. Infinitt 클라이언트를 실행한 상태에서 다시 시도 (netstat 탐색)")
-        print("  2. Infinitt 클라이언트 설정 메뉴에서 직접 확인")
-        print("  3. 병원 IT 담당자 또는 방사선사에게 문의")
-        print("     - 필요한 정보: 서버 IP, 포트(기본 104), AE Title")
+        print("[결과] PACS 설정을 자동으로 찾지 못했습니다.")
+        _print_it_questions()
 
     if result.get("cache_dirs"):
-        print()
-        print(f"[발견] Infinitt 캐시 폴더 ({len(result['cache_dirs'])}개):")
+        print(f"\nInfinitt 캐시 폴더 발견 ({len(result['cache_dirs'])}개):")
         for d in result["cache_dirs"]:
-            print(f"       {d}")
-        print()
-        print("→ 이 폴더들이 monitor 모드에서 자동 감시됩니다.")
-        print("  config.yaml의 monitor.watch_dirs 에 추가하세요.")
+            print(f"  {d}")
+
+
+def _print_it_questions() -> None:
+    print()
+    print("━" * 60)
+    print("  정보팀에 문의할 내용 (아래 그대로 전달하세요)")
+    print("━" * 60)
+    print()
+    print("  안녕하세요, 연구 목적으로 PACS에서 치근단 방사선 영상을")
+    print("  Python 스크립트로 자동 수집하려고 합니다.")
+    print("  아래 정보를 알 수 있을까요?")
+    print()
+    print("  1. PACS 서버 IP 주소")
+    print("  2. DICOM 서비스 포트 번호 (보통 104)")
+    print("  3. PACS AE Title")
+    print("  4. 외부 DICOM SCU(C-FIND/C-MOVE)가 허용되어 있는지 여부")
+    print()
+    print("━" * 60)
+
+
+def cmd_ui(cfg: dict, dirs: dict) -> None:
+    from infinitt_ui import run_ui_mode
+    from monitor import run_monitor
+    import threading
+
+    # UI 자동화 + 임시 파일 감시를 동시에 실행
+    # 임시 파일 감시: 별도 스레드 (Infinitt가 저장한 파일 자동 처리)
+    monitor_thread = threading.Thread(
+        target=run_monitor, args=(cfg, dirs), daemon=True
+    )
+    monitor_thread.start()
+
+    # UI 자동화: 메인 스레드 (단축키 + 화면 변화 감지)
+    run_ui_mode(cfg, dirs)
 
 
 def cmd_monitor(cfg: dict, dirs: dict) -> None:
-    """임시 파일 감시 모드 실행."""
     from monitor import run_monitor
     run_monitor(cfg, dirs)
 
 
 def cmd_dicom(cfg: dict, dirs: dict) -> None:
-    """DICOM 직접 연결 모드 실행."""
+    import pydicom
+    from tqdm import tqdm
     from dicom_query import query_studies, retrieve_study
     from dicom_converter import convert_dicom_to_image, deidentify_dicom, build_study_subpath
 
-    dicom_cfg = cfg.get("dicom", {})
-    server = dicom_cfg.get("server", {})
-
+    server = cfg.get("dicom", {}).get("server", {})
     if not server.get("host"):
         logger.error(
-            "PACS 서버 IP가 설정되지 않았습니다.\n"
-            "  python src/main.py --find-pacs  명령으로 자동 탐색하거나\n"
+            "PACS 서버 IP가 없습니다.\n"
+            "  run.bat --find-pacs  로 자동 탐색하거나\n"
             "  config.yaml의 dicom.server.host에 직접 입력하세요."
         )
+        _print_it_questions()
         sys.exit(1)
 
     studies = query_studies(cfg)
@@ -103,49 +124,59 @@ def cmd_dicom(cfg: dict, dirs: dict) -> None:
     quality = cfg["output"].get("image_quality", 95)
     organize = cfg["output"].get("organize_by_patient", True)
 
-    for study in tqdm(studies, desc="스터디 다운로드"):
+    for study in tqdm(studies, desc="다운로드"):
         uid = str(getattr(study, "StudyInstanceUID", ""))
         patient_id = str(getattr(study, "PatientID", "unknown"))
         study_date = str(getattr(study, "StudyDate", "00000000"))
-
         study_dir = raw_dir / patient_id / study_date
-        dcm_files = retrieve_study(uid, cfg, study_dir)
 
-        for dcm_path in dcm_files:
+        for dcm_path in retrieve_study(uid, cfg, study_dir):
             try:
                 ds = pydicom.dcmread(str(dcm_path), stop_before_pixels=False)
                 sub = build_study_subpath(ds, include_patient_id=organize)
-
-                if cfg["output"].get("save_dicom", True):
+                if cfg["output"].get("save_dicom"):
                     deidentify_dicom(dcm_path, dirs["dicom"] / f"{sub}.dcm", cfg)
-
-                if cfg["output"].get("save_image", True):
-                    convert_dicom_to_image(dcm_path, dirs["images"] / f"{sub}.{fmt}", fmt, quality)
-
+                if cfg["output"].get("save_image"):
+                    convert_dicom_to_image(
+                        dcm_path, dirs["images"] / f"{sub}.{fmt}", fmt, quality
+                    )
             except Exception as e:
                 logger.error(f"처리 오류 [{dcm_path.name}]: {e}")
 
 
 def cmd_convert_only(dicom_dir: Path, cfg: dict, dirs: dict) -> None:
-    """DICOM 폴더 → 이미지 일괄 변환."""
-    dcm_files = list(dicom_dir.rglob("*.dcm")) + list(dicom_dir.rglob("*.DCM"))
-    logger.info(f"변환 대상: {len(dcm_files)}개")
+    import pydicom
+    from tqdm import tqdm
+    from dicom_converter import convert_dicom_to_image, build_study_subpath
+
+    all_files = (
+        list(dicom_dir.rglob("*.dcm"))
+        + list(dicom_dir.rglob("*.DCM"))
+        + list(dicom_dir.rglob("*.jpg"))
+        + list(dicom_dir.rglob("*.jpeg"))
+        + list(dicom_dir.rglob("*.png"))
+    )
+    logger.info(f"변환 대상: {len(all_files)}개")
 
     fmt = cfg["output"].get("image_format", "png")
     quality = cfg["output"].get("image_quality", 95)
-    organize = cfg["output"].get("organize_by_patient", True)
     ok = fail = 0
 
-    for dcm_path in tqdm(dcm_files, desc="변환 중"):
+    for f in tqdm(all_files, desc="변환"):
         try:
-            ds = pydicom.dcmread(str(dcm_path), stop_before_pixels=False)
-            sub = build_study_subpath(ds, include_patient_id=organize)
-            if convert_dicom_to_image(dcm_path, dirs["images"] / f"{sub}.{fmt}", fmt, quality):
-                ok += 1
+            if f.suffix.lower() in (".dcm", ""):
+                ds = pydicom.dcmread(str(f), stop_before_pixels=False)
+                sub = build_study_subpath(ds, include_patient_id=True)
+                out = dirs["images"] / f"{sub}.{fmt}"
+                ok += 1 if convert_dicom_to_image(f, out, fmt, quality) else 0
             else:
-                fail += 1
+                out = dirs["images"] / f.name
+                out.parent.mkdir(parents=True, exist_ok=True)
+                import shutil
+                shutil.copy2(f, out)
+                ok += 1
         except Exception as e:
-            logger.warning(f"실패 [{dcm_path.name}]: {e}")
+            logger.warning(f"실패 [{f.name}]: {e}")
             fail += 1
 
     logger.info(f"변환 완료 — 성공: {ok}, 실패: {fail}")
@@ -154,12 +185,9 @@ def cmd_convert_only(dicom_dir: Path, cfg: dict, dirs: dict) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="치근단 방사선 사진 자동 수집 도구")
     parser.add_argument("--config", default="config.yaml")
-    parser.add_argument("--mode", choices=["monitor", "dicom"],
-                        help="실행 모드 (config.yaml 설정 덮어쓰기)")
-    parser.add_argument("--find-pacs", action="store_true",
-                        help="PC에서 PACS 서버 설정 자동 탐색")
-    parser.add_argument("--convert-only", metavar="DICOM_DIR",
-                        help="기존 DICOM 폴더를 이미지로 변환만 실행")
+    parser.add_argument("--mode", choices=["ui", "monitor", "dicom"])
+    parser.add_argument("--find-pacs", action="store_true", help="PACS 서버 설정 자동 탐색")
+    parser.add_argument("--convert-only", metavar="DIR", help="파일 이미지 변환만 실행")
     args = parser.parse_args()
 
     if args.find_pacs:
@@ -171,22 +199,15 @@ def main() -> None:
     setup_file_logging(dirs["logs"])
 
     if args.convert_only:
-        dicom_dir = Path(args.convert_only)
-        if not dicom_dir.exists():
-            logger.error(f"폴더 없음: {dicom_dir}")
+        src = Path(args.convert_only)
+        if not src.exists():
+            logger.error(f"폴더 없음: {src}")
             sys.exit(1)
-        cmd_convert_only(dicom_dir, cfg, dirs)
+        cmd_convert_only(src, cfg, dirs)
         return
 
-    mode = args.mode or cfg.get("mode", "monitor")
-
-    if mode == "monitor":
-        cmd_monitor(cfg, dirs)
-    elif mode == "dicom":
-        cmd_dicom(cfg, dirs)
-    else:
-        logger.error(f"알 수 없는 모드: {mode}")
-        sys.exit(1)
+    mode = args.mode or cfg.get("mode", "ui")
+    {"ui": cmd_ui, "monitor": cmd_monitor, "dicom": cmd_dicom}[mode](cfg, dirs)
 
 
 if __name__ == "__main__":
