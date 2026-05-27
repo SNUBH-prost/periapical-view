@@ -1,0 +1,5 @@
+playwright>=1.44.0
+pydicom>=2.4.4
+Pillow>=10.3.0
+PyYAML>=6.0.1
+tqdm>=4.66.4

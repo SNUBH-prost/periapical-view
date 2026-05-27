@@ -1,0 +1,87 @@
+# Infinitt PACS 접속 설정
+pacs:
+  url: "http://192.168.1.100:8080"   # 내부 PACS 서버 주소
+  username: "your_username"
+  password: "your_password"
+
+  # 로그인 페이지 경로 (Infinitt 버전에 따라 다를 수 있음)
+  login_path: "/infinitt/index.jsp"
+
+  # 워크리스트 검색 경로
+  worklist_path: "/infinitt/worklist.jsp"
+
+# 검색 조건
+search:
+  # 치근단 방사선 = 구내 방사선 (Intraoral) → DICOM 모달리티 IO
+  modality: "IO"
+
+  # 검색할 날짜 범위
+  date_from: "20230101"   # YYYYMMDD
+  date_to: "20251231"
+
+  # 스터디 설명 키워드 (없으면 모달리티만으로 필터)
+  # study_description_filter: "periapical"
+
+  # 한 번에 처리할 최대 환자 수 (테스트용 - 전체 수집 시 0으로 설정)
+  max_studies: 0  # 0 = 무제한
+
+# 출력 설정
+output:
+  base_dir: "./output"
+
+  # DICOM 원본 저장 여부
+  save_dicom: true
+  dicom_dir: "dicom"
+
+  # PNG/JPEG 변환 저장
+  save_image: true
+  image_dir: "images"
+  image_format: "png"    # "png" 또는 "jpeg"
+  image_quality: 95      # JPEG 품질 (1-100), PNG는 무시됨
+
+  # 저장 경로 구조: {base_dir}/{image_dir}/{patient_id}/{study_date}/파일명
+  organize_by_patient: true
+
+# DICOM 비식별화 설정 (AI 학습용)
+deidentify:
+  enabled: true
+  # 제거할 태그 목록 (환자 식별 정보)
+  remove_tags:
+    - "PatientName"
+    - "PatientBirthDate"
+    - "PatientSex"
+    - "PatientAge"
+    - "PatientAddress"
+    - "PatientTelephoneNumbers"
+    - "ReferringPhysicianName"
+    - "InstitutionName"
+    - "InstitutionAddress"
+  # 환자 ID를 익명 ID로 대체
+  anonymize_patient_id: true
+
+# 브라우저 설정
+browser:
+  headless: false    # true: 화면 없이 실행, false: 브라우저 보이게 실행
+  slow_mo: 100       # 액션 사이 대기 시간 (ms) - 너무 빠르면 에러 발생
+  timeout: 30000     # 페이지 로드 타임아웃 (ms)
+  download_timeout: 60000  # 다운로드 타임아웃 (ms)
+
+# Infinitt PACS UI 셀렉터 (버전에 따라 수정 필요)
+# 아래는 일반적인 기본값 - 실제 PACS에 맞게 조정하세요
+selectors:
+  login:
+    username_field: "input[name='userId'], input[type='text']"
+    password_field: "input[name='password'], input[type='password']"
+    submit_button: "input[type='submit'], button[type='submit']"
+
+  worklist:
+    modality_select: "select[name='modality']"
+    date_from_field: "input[name='fromDate']"
+    date_to_field: "input[name='toDate']"
+    search_button: "button#searchBtn, input[value='Search']"
+    study_rows: "table#worklistTable tr.study-row, tr.wl-row"
+    study_link: "a.study-link, td.patientId a"
+
+  viewer:
+    export_menu: "div.export-btn, button.export"
+    download_dicom: "a[onclick*='dicom'], span:text('DICOM')"
