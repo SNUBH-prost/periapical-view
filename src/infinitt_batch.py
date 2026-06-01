@@ -152,10 +152,13 @@ def _scroll_and_collect_periapical_rows(
     ui_cfg: dict,
 ) -> list[dict]:
     """
-    검사명 정렬 후 목록을 끝까지 스크롤하며 키워드에 맞는 행을 모두 수집.
-    수집 후 5년 날짜 필터를 적용해 반환한다.
+    검사명 정렬 후 스크롤하며 'DS periapical view (implant)' 구간을 찾아 수집.
 
-    주의: 검사명 정렬 시 날짜가 섞이므로 날짜 기준 조기 종료를 하지 않는다.
+    동작 원리:
+    - 검사명 정렬 → 같은 검사명끼리 묶임, 그 안에서 날짜 내림차순(최신→오래된)
+    - 키워드 구간 진입 전: 그냥 스킵하며 스크롤
+    - 키워드 구간 내: 날짜 확인 → 5년 이전 날짜가 나오면 수집 중단
+    - 키워드 구간 지남(다른 검사명 등장): 수집 중단
     """
     keywords   = ui_cfg.get("study_name_filter", ["DS periapical view (implant)"])
     years_back = ui_cfg.get("years_back", 5)
@@ -166,13 +169,14 @@ def _scroll_and_collect_periapical_rows(
     list_cx = positions["study_row_1"][0]
     list_cy = positions["study_row_1"][1]
 
-    # 목록 맨 위로
     pyautogui.click(list_cx, list_cy)
     pyautogui.hotkey("ctrl", "home")
     time.sleep(delay)
 
-    all_keyword_rows: list[dict] = []
+    collected: list[dict] = []
     seen: set[str] = set()
+    in_group = False   # 키워드 구간 안에 들어왔는지
+    done     = False
 
     for page in range(max_scroll + 1):
         visible = _read_visible_rows(title_contains)
@@ -185,32 +189,36 @@ def _scroll_and_collect_periapical_rows(
             seen.add(key)
             new_this_page += 1
 
-            text_lower = row["text"].lower()
-            if any(kw.lower() in text_lower for kw in keywords):
-                all_keyword_rows.append(row)
-                logger.debug(f"  키워드 일치: {row['text'][:60]}  날짜={row['date']}")
+            is_match = any(kw.lower() in row["text"].lower() for kw in keywords)
 
-        # 새로 보이는 행이 없으면 목록 끝
+            if is_match:
+                in_group = True
+                d = row["date"]
+                if d and d < cutoff:
+                    # 날짜순이므로 이 이후는 모두 5년 초과 → 중단
+                    logger.debug(f"  5년 초과 도달 → 수집 중단: {d}")
+                    done = True
+                    break
+                collected.append(row)
+                logger.debug(f"  수집: {row['text'][:60]}  날짜={d}")
+            else:
+                # 키워드 구간을 지나쳤으면 중단
+                if in_group:
+                    logger.debug("  키워드 구간 종료 → 수집 중단")
+                    done = True
+                    break
+
+        if done:
+            break
         if page > 0 and new_this_page == 0:
-            logger.debug(f"  목록 끝 (page {page})")
             break
 
         pyautogui.click(list_cx, list_cy)
         pyautogui.press("pagedown")
         time.sleep(delay)
 
-    # 날짜 필터: 5년 이내만, 최신순 정렬
-    in_period = [
-        r for r in all_keyword_rows
-        if r["date"] >= cutoff or not r["date"]   # 날짜 미상은 일단 포함
-    ]
-    in_period.sort(key=lambda r: r["date"], reverse=True)   # 최신순
-
-    logger.info(
-        f"  DS periapical view (implant) 전체 {len(all_keyword_rows)}개 발견 "
-        f"→ 5년 이내 {len(in_period)}개"
-    )
-    return in_period
+    logger.info(f"  DS periapical view (implant) {len(collected)}개 발견 (5년 이내)")
+    return collected
 
 
 # ──────────────────────────────────────────────────────────────
