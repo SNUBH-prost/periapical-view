@@ -54,14 +54,14 @@ echo.
 echo [3/3] Installing packages (offline)...
 call "%INSTALL_DIR%\venv\Scripts\activate.bat"
 
-pip install ^
-    --no-index ^
-    --find-links="%USB_ROOT%packages" ^
-    -r "%INSTALL_DIR%\requirements.txt"
+:: 경로에 공백/괄호가 있어도 안전하게: --find-links 와 경로를 분리해서 따옴표 처리
+set PKG_DIR=%USB_ROOT%packages
+pip install --no-index --find-links "%PKG_DIR%" -r "%INSTALL_DIR%\requirements.txt"
 
 if errorlevel 1 (
     echo.
     echo [ERROR] Package install failed.
+    echo   Packages folder: %PKG_DIR%
     echo   Make sure packages\ folder contains .whl files.
     echo   Re-run usb_prepare on the internet PC.
     pause
