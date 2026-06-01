@@ -1,12 +1,14 @@
 """치근단 방사선 사진 자동 수집 도구.
 
 실행 모드:
-  python src/main.py                  → config.yaml의 mode 설정으로 실행
-  python src/main.py --mode ui        → Infinitt 우클릭 자동화 + 단축키 (기본)
-  python src/main.py --mode monitor   → 임시 파일 폴더 실시간 감시
-  python src/main.py --mode dicom     → DICOM 직접 연결 (서버 IP 필요)
-  python src/main.py --find-pacs      → PC에서 PACS 서버 설정 자동 탐색
-  python src/main.py --convert-only DICOM_DIR  → 기존 파일 이미지 변환
+  python src/main.py                          → config.yaml의 mode 설정으로 실행
+  python src/main.py --mode ui                → Infinitt 우클릭 자동화 + F9 단축키
+  python src/main.py --setup                  → Infinitt UI 좌표 기록 (배치 전 1회)
+  python src/main.py --excel 환자목록.xlsx    → 배치: 엑셀 환자 280명 자동 수집
+  python src/main.py --mode monitor           → 임시 파일 폴더 실시간 감시
+  python src/main.py --mode dicom             → DICOM 직접 연결 (서버 IP 필요)
+  python src/main.py --find-pacs              → PC에서 PACS 서버 설정 자동 탐색
+  python src/main.py --convert-only DIR       → 기존 파일 이미지 변환
 """
 import argparse
 import logging
@@ -182,13 +184,30 @@ def cmd_convert_only(dicom_dir: Path, cfg: dict, dirs: dict) -> None:
     logger.info(f"변환 완료 — 성공: {ok}, 실패: {fail}")
 
 
+def cmd_batch(excel_path: str, cfg: dict, dirs: dict, resume_from: int = 0) -> None:
+    from excel_reader import read_patient_ids
+    from infinitt_batch import run_batch
+
+    patient_ids = read_patient_ids(excel_path)
+    logger.info(f"엑셀 로드 완료: {len(patient_ids)}명 ({excel_path})")
+    run_batch(patient_ids, cfg, dirs, resume_from=resume_from)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="치근단 방사선 사진 자동 수집 도구")
     parser.add_argument("--config", default="config.yaml")
     parser.add_argument("--mode", choices=["ui", "monitor", "dicom"])
+    parser.add_argument("--setup", action="store_true", help="Infinitt UI 좌표 기록 (배치 전 1회 실행)")
+    parser.add_argument("--excel", metavar="FILE", help="환자번호 엑셀 파일로 배치 수집")
+    parser.add_argument("--resume", type=int, default=0, metavar="N", help="N번째 환자부터 재시작")
     parser.add_argument("--find-pacs", action="store_true", help="PACS 서버 설정 자동 탐색")
     parser.add_argument("--convert-only", metavar="DIR", help="파일 이미지 변환만 실행")
     args = parser.parse_args()
+
+    if args.setup:
+        from infinitt_batch import run_setup
+        run_setup()
+        return
 
     if args.find_pacs:
         cmd_find_pacs()
@@ -197,6 +216,10 @@ def main() -> None:
     cfg = load_config(args.config)
     dirs = get_output_dirs(cfg)
     setup_file_logging(dirs["logs"])
+
+    if args.excel:
+        cmd_batch(args.excel, cfg, dirs, resume_from=args.resume)
+        return
 
     if args.convert_only:
         src = Path(args.convert_only)
