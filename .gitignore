@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+
+# 실행 중 생성되는 파일
+output/
+ui_positions.json
+*.log
+
+# 환자 데이터 (절대 커밋 금지)
+*.xlsx
+*.xls
+*.csv
+infinitt_export/
+
+# OS
+Thumbs.db
+.DS_Store
