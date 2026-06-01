@@ -79,28 +79,42 @@ def _click_menu_item(menu_items: list[str], delay: float) -> bool:
     return False
 
 
-def _handle_save_dialog(save_dir: Path, save_btn_text: str, delay: float) -> None:
-    """저장 대화상자에서 경로를 지정하고 저장 버튼 클릭."""
-    save_dir.mkdir(parents=True, exist_ok=True)
+def _handle_save_dialog(full_path: Path, save_btn_text: str, delay: float) -> bool:
+    """저장 대화상자의 파일명 칸에 전체 경로(폴더+파일명)를 입력하고 저장.
+
+    full_path: 예) C:\\infinitt_export\\1234567\\study_01\\img_01.png
+    파일명까지 지정해야 여러 이미지가 덮어쓰기 없이 각각 저장됨.
+    """
+    full_path.parent.mkdir(parents=True, exist_ok=True)
+    path_str = str(full_path)
     time.sleep(delay * 2)
     try:
         from pywinauto import Desktop
         for win in Desktop(backend="uia").windows():
-            if any(k in win.window_text() for k in ("저장", "Save", "다른 이름")):
+            if any(k in win.window_text() for k in ("저장", "Save", "다른 이름", "내보내기", "Export")):
+                # 파일명 입력 칸에 전체 경로 입력
                 try:
-                    win.child_window(control_type="Edit").set_text(str(save_dir))
+                    edit = win.child_window(control_type="Edit")
+                    edit.set_focus()
+                    edit.set_text(path_str)
                 except Exception:
                     pyautogui.hotkey("ctrl", "a")
-                    pyautogui.typewrite(str(save_dir), interval=0.05)
+                    pyautogui.press("delete")
+                    pyautogui.typewrite(path_str, interval=0.03)
                 time.sleep(delay)
+                # 저장 버튼 클릭
                 try:
                     win.child_window(title=save_btn_text, control_type="Button").click_input()
                 except Exception:
                     pyautogui.press("enter")
-                return
-    except Exception:
-        pass
-    # 대화상자 없이 바로 저장된 경우도 있음 (기본 경로 저장)
+                time.sleep(delay)
+                # 덮어쓰기 확인 대화상자가 뜨면 Enter (Yes)
+                pyautogui.press("enter")
+                return True
+    except Exception as e:
+        logger.debug(f"저장 대화상자 처리 실패: {e}")
+    # 대화상자가 안 보이면 Infinitt가 기본 경로에 바로 저장한 경우 → 성공으로 간주
+    return True
 
 
 # ──────────────────────────────────────────────────────────────
@@ -216,8 +230,8 @@ def load_positions() -> dict:
 # 이미지 저장 (슬롯 하나)
 # ──────────────────────────────────────────────────────────────
 
-def _save_slot(ix: int, iy: int, save_dir: Path, ui_cfg: dict) -> bool:
-    """이미지 슬롯(ix, iy)에서 우클릭 → 저장 메뉴 → 저장 대화상자 처리."""
+def _save_slot(ix: int, iy: int, full_path: Path, ui_cfg: dict) -> bool:
+    """이미지 슬롯(ix, iy)에서 우클릭 → 저장 메뉴 → full_path로 저장."""
     delay = ui_cfg.get("action_delay", 0.6)
     menu_items = ui_cfg.get("save_menu_items", ["Save Image", "이미지 저장"])
     save_btn_text = ui_cfg.get("save_dialog_button", "저장")
@@ -226,8 +240,7 @@ def _save_slot(ix: int, iy: int, save_dir: Path, ui_cfg: dict) -> bool:
     found = _click_menu_item(menu_items, delay)
     if not found:
         return False
-    _handle_save_dialog(save_dir, save_btn_text, delay)
-    return True
+    return _handle_save_dialog(full_path, save_btn_text, delay)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -261,10 +274,12 @@ def _process_study(
     time.sleep(wait_open)
 
     study_dir = base_save_dir / patient_id / f"study_{study_idx + 1:02d}"
+    ext = ui_cfg.get("save_extension", "png").lstrip(".")
     saved = 0
 
     for img_idx, (ix, iy) in enumerate(slots):
-        ok = _save_slot(ix, iy, study_dir, ui_cfg)
+        full_path = study_dir / f"img_{img_idx + 1:02d}.{ext}"
+        ok = _save_slot(ix, iy, full_path, ui_cfg)
         if ok:
             saved += 1
             time.sleep(delay * 0.5)

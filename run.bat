@@ -1,8 +1,10 @@
 @echo off
 chcp 949 > nul
 
+cd /d "%~dp0"
+
 if not exist "venv" (
-    echo [ERROR] Run install.bat first.
+    echo [ERROR] venv not found. Run install.bat first.
     pause
     exit /b 1
 )
@@ -10,11 +12,16 @@ if not exist "venv" (
 call venv\Scripts\activate.bat
 
 REM Usage:
-REM   run.bat                          F9 hotkey mode
+REM   run.bat --check                  Validate setup without Infinitt
 REM   run.bat --setup                  Record Infinitt UI positions (run once)
-REM   run.bat --excel patients.xlsx    Batch collect 280 patients
+REM   run.bat --excel patients.xlsx    Batch collect patients
 REM   run.bat --excel list.xlsx --resume 50   Resume from patient #50
-REM   run.bat --find-pacs              Auto-detect PACS server settings
-REM   run.bat --convert-only FOLDER    Convert existing files to images
+REM   run.bat                          F9 hotkey mode
 
 python src\main.py %*
+
+if errorlevel 1 (
+    echo.
+    echo [The program exited with an error. See the message above.]
+    pause
+)

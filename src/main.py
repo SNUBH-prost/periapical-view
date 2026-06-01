@@ -1,10 +1,10 @@
 """치근단 방사선 사진 자동 수집 도구.
 
 실행 모드:
-  python src/main.py                          → config.yaml의 mode 설정으로 실행
-  python src/main.py --mode ui                → Infinitt 우클릭 자동화 + F9 단축키
+  python src/main.py --check                  → 설정 점검 (Infinitt 없이 안전하게 검증)
   python src/main.py --setup                  → Infinitt UI 좌표 기록 (배치 전 1회)
   python src/main.py --excel 환자목록.xlsx    → 배치: 엑셀 환자 280명 자동 수집
+  python src/main.py --mode ui                → Infinitt 우클릭 자동화 + F9 단축키
   python src/main.py --mode monitor           → 임시 파일 폴더 실시간 감시
   python src/main.py --mode dicom             → DICOM 직접 연결 (서버 IP 필요)
   python src/main.py --find-pacs              → PC에서 PACS 서버 설정 자동 탐색
@@ -193,17 +193,99 @@ def cmd_batch(excel_path: str, cfg: dict, dirs: dict, resume_from: int = 0) -> N
     run_batch(patient_ids, cfg, dirs, resume_from=resume_from)
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="치근단 방사선 사진 자동 수집 도구")
-    parser.add_argument("--config", default="config.yaml")
-    parser.add_argument("--mode", choices=["ui", "monitor", "dicom"])
-    parser.add_argument("--setup", action="store_true", help="Infinitt UI 좌표 기록 (배치 전 1회 실행)")
-    parser.add_argument("--excel", metavar="FILE", help="환자번호 엑셀 파일로 배치 수집")
-    parser.add_argument("--resume", type=int, default=0, metavar="N", help="N번째 환자부터 재시작")
-    parser.add_argument("--find-pacs", action="store_true", help="PACS 서버 설정 자동 탐색")
-    parser.add_argument("--convert-only", metavar="DIR", help="파일 이미지 변환만 실행")
-    args = parser.parse_args()
+def cmd_check(args, cfg: dict, dirs: dict) -> None:
+    """Infinitt 없이 설정·환경을 점검. 배치 실행 전 안전 확인용."""
+    print()
+    print("=" * 60)
+    print("  설정 점검 (--check)")
+    print("=" * 60)
 
+    ok = True
+
+    # 1) 필수 패키지 확인
+    print("\n[1] 필수 패키지 확인")
+    for mod, label in [
+        ("openpyxl", "엑셀 읽기"),
+        ("pyautogui", "마우스/키보드 자동화"),
+        ("pynput", "좌표 기록/단축키"),
+        ("win32gui", "Windows 창 제어"),
+        ("pywinauto", "메뉴/대화상자 자동화"),
+        ("PIL", "이미지 처리"),
+    ]:
+        try:
+            __import__(mod)
+            print(f"    OK   {mod:12s} ({label})")
+        except ImportError:
+            print(f"    없음 {mod:12s} ({label}) → install.bat을 다시 실행하세요")
+            ok = False
+
+    # 2) 설정 파일 확인
+    print("\n[2] config.yaml 확인")
+    ui = cfg.get("ui", {})
+    print(f"    저장 폴더        : {ui.get('infinitt_save_dir', '(미설정)')}")
+    print(f"    최대 스터디/환자 : {ui.get('max_studies_per_patient', 20)}")
+    print(f"    검색 후 대기     : {ui.get('wait_after_search', 2.0)}초")
+    print(f"    스터디 열기 후 대기: {ui.get('wait_after_open', 3.0)}초")
+    print(f"    저장 메뉴 후보   : {ui.get('save_menu_items', [])}")
+
+    # 3) UI 좌표 파일 확인 (패키지 없이 직접 JSON 읽기 → 절대 안 죽음)
+    print("\n[3] UI 좌표 기록 확인 (ui_positions.json)")
+    import json
+    pos_file = Path("./ui_positions.json")
+    if pos_file.exists():
+        try:
+            pos = json.loads(pos_file.read_text())
+            n_slots = len(pos.get("image_slots", []))
+            print(f"    OK   검색창       : {pos.get('search_box')}")
+            print(f"    OK   스터디 행 높이: {pos.get('study_row_height')}px")
+            print(f"    OK   이미지 슬롯   : {n_slots}개")
+            print(f"    OK   뒤로가기 키   : {cfg.get('ui', {}).get('back_key', 'escape')}")
+            if n_slots == 0:
+                print("    경고: 이미지 슬롯이 0개입니다. run.bat --setup 을 다시 하세요.")
+                ok = False
+        except Exception as e:
+            print(f"    오류: ui_positions.json을 읽을 수 없습니다 ({e})")
+            ok = False
+    else:
+        print("    없음: 아직 좌표를 기록하지 않았습니다.")
+        print("          run.bat --setup 을 먼저 실행하세요.")
+        ok = False
+
+    # 4) 엑셀 파일 확인 (지정된 경우)
+    if args.excel:
+        print(f"\n[4] 엑셀 파일 확인: {args.excel}")
+        try:
+            from excel_reader import read_patient_ids
+            ids = read_patient_ids(args.excel)
+            print(f"    OK   환자 {len(ids)}명 읽음")
+            print(f"         처음 5명: {ids[:5]}")
+        except Exception as e:
+            print(f"    오류: {e}")
+            ok = False
+
+    # 5) Infinitt 창 확인 (Windows에서만, 패키지 없으면 건너뜀)
+    print("\n[5] Infinitt 실행 여부")
+    title = cfg.get("ui", {}).get("window_title_contains", "Infinitt")
+    try:
+        from infinitt_batch import _bring_to_front
+        if _bring_to_front(title):
+            print(f"    OK   '{title}' 창을 찾았습니다.")
+        else:
+            print(f"    없음: '{title}' 창을 찾지 못했습니다. (Infinitt를 켜세요)")
+    except Exception as e:
+        print(f"    건너뜀 (Windows 아님 또는 패키지 미설치): {type(e).__name__}")
+
+    print("\n" + "=" * 60)
+    if ok:
+        print("  점검 통과 — 배치를 실행할 수 있습니다:")
+        print("    run.bat --excel 환자목록.xlsx")
+    else:
+        print("  일부 항목에 문제가 있습니다. 위의 '없음/오류'를 해결하세요.")
+    print("=" * 60)
+
+
+def _run(args) -> None:
+    """실제 작업 수행 (예외는 main에서 처리)."""
     if args.setup:
         from infinitt_batch import run_setup
         run_setup()
@@ -216,6 +298,10 @@ def main() -> None:
     cfg = load_config(args.config)
     dirs = get_output_dirs(cfg)
     setup_file_logging(dirs["logs"])
+
+    if args.check:
+        cmd_check(args, cfg, dirs)
+        return
 
     if args.excel:
         cmd_batch(args.excel, cfg, dirs, resume_from=args.resume)
@@ -231,6 +317,39 @@ def main() -> None:
 
     mode = args.mode or cfg.get("mode", "ui")
     {"ui": cmd_ui, "monitor": cmd_monitor, "dicom": cmd_dicom}[mode](cfg, dirs)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="치근단 방사선 사진 자동 수집 도구")
+    parser.add_argument("--config", default="config.yaml")
+    parser.add_argument("--mode", choices=["ui", "monitor", "dicom"])
+    parser.add_argument("--check", action="store_true", help="설정 점검 (Infinitt 없이 검증)")
+    parser.add_argument("--setup", action="store_true", help="Infinitt UI 좌표 기록 (배치 전 1회 실행)")
+    parser.add_argument("--excel", metavar="FILE", help="환자번호 엑셀 파일로 배치 수집")
+    parser.add_argument("--resume", type=int, default=0, metavar="N", help="N번째 환자부터 재시작")
+    parser.add_argument("--find-pacs", action="store_true", help="PACS 서버 설정 자동 탐색")
+    parser.add_argument("--convert-only", metavar="DIR", help="파일 이미지 변환만 실행")
+    args = parser.parse_args()
+
+    try:
+        _run(args)
+    except KeyboardInterrupt:
+        print("\n사용자가 중단했습니다.")
+    except Exception as e:
+        # 창이 즉시 닫히지 않도록 에러를 보여주고 대기
+        import traceback
+        print("\n" + "!" * 60)
+        print("  오류가 발생했습니다:")
+        print(f"    {type(e).__name__}: {e}")
+        print("!" * 60)
+        print("\n[상세 내용]")
+        traceback.print_exc()
+        print()
+        try:
+            input("Enter 키를 누르면 종료합니다... ")
+        except EOFError:
+            pass
+        sys.exit(1)
 
 
 if __name__ == "__main__":

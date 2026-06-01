@@ -32,6 +32,10 @@ ui:
   # 이미지 저장 대화상자가 뜰 때 저장 버튼 텍스트
   save_dialog_button: "저장"
 
+  # 저장되는 이미지 파일 확장자 (Infinitt 저장 형식에 맞추세요)
+  # png / jpg / bmp / dcm 등
+  save_extension: "png"
+
   # 저장 폴더 (Infinitt 저장 대화상자에서 이 경로로 자동 이동)
   infinitt_save_dir: "C:\\infinitt_export"
 
