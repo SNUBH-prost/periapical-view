@@ -1,117 +1,194 @@
-# 치근단 방사선 사진 자동 수집 도구 가이드
+# 치근단 방사선 사진 자동 수집 — 사용 가이드
 
-## 구조
+엑셀에 적은 환자번호(약 280명)에 대해, Infinitt PACS에서 5년치 치근단(periapical) 사진을
+자동으로 검색·열기·저장하는 도구입니다.
 
-```
-periapical-view/
-├── src/
-│   ├── main.py              # 진입점
-│   ├── pacs_scraper.py      # Infinitt PACS 웹 자동화
-│   ├── dicom_converter.py   # DICOM → PNG/JPEG 변환 + 비식별화
-│   └── config.py            # 설정 로드
-├── config.yaml              # PACS 접속 정보 및 설정
-├── requirements.txt
-└── install.sh               # 설치 스크립트
-```
+---
 
-## 설치
-
-```bash
-bash install.sh
-```
-
-내부망 환경에서 pip 인터넷이 안 될 경우 → 외부망 PC에서 패키지를 다운로드해서 옮기기:
-```bash
-# 외부망 PC
-pip download -r requirements.txt -d ./packages
-playwright install chromium --dry-run  # 브라우저 파일 위치 확인 후 수동 복사
-
-# 내부망 PC
-pip install --no-index --find-links=./packages -r requirements.txt
-```
-
-## 실행 방법
-
-### 1단계: 셀렉터 탐색 (최초 1회)
-
-Infinitt PACS 버전마다 HTML 구조가 다릅니다. 먼저 실제 UI를 확인하세요:
-
-```bash
-source venv/bin/activate
-python src/main.py --inspect
-```
-
-브라우저가 열리면 F12 개발자 도구로 로그인 폼, 워크리스트 테이블 등의 CSS 셀렉터를 확인하고
-`config.yaml`의 `selectors` 섹션을 업데이트합니다.
-
-### 2단계: 소량 테스트
-
-```bash
-python src/main.py --limit 5
-```
-
-`output/` 폴더에 결과가 저장됩니다.
-
-### 3단계: 전체 수집
-
-```bash
-python src/main.py
-```
-
-## 출력 구조
+## 전체 그림
 
 ```
-output/
-├── dicom/
-│   ├── raw/                 # 원본 DICOM
-│   │   └── {환자ID}/{날짜}/
-│   └── clean/               # 비식별화된 DICOM
-│       └── {환자ID}/{날짜}/
-├── images/                  # PNG/JPEG 변환본
-│   └── {환자ID}/{날짜}/
-└── logs/
-    └── run.log
+[VM - 인터넷 O]                          [내부망 PC - Infinitt, 인터넷 X]
+  패키지 다운로드             USB           실제 자동화 실행
+  (usb_준비 스크립트)   ──────────▶    (usb_설치 → run.bat)
 ```
 
-## 자주 쓰는 명령
+- **VM(인터넷 됨)** : 설치에 필요한 파일을 USB에 모으는 용도
+- **내부망 PC(Infinitt 있는 곳)** : 여기서 프로그램이 마우스로 Infinitt를 조작
 
-```bash
-# 이미 받아둔 DICOM 폴더를 PNG로 변환만 할 때
-python src/main.py --convert-only ./output/dicom/raw
+> 자동화는 **반드시 Infinitt가 떠 있는 내부망 PC에서** 실행해야 합니다.
+> 프로그램이 사람처럼 마우스·키보드로 Infinitt 화면을 직접 조작하기 때문입니다.
 
-# 비식별화 없이 원본 그대로 저장
-python src/main.py --no-deidentify
+---
 
-# 날짜 범위 변경: config.yaml의 search.date_from / date_to 수정
+## STEP 0. 준비물
+
+- USB 메모리 1개
+- 엑셀 파일 1개 — **A열(첫 번째 열)에 환자번호만** 세로로 입력
+  ```
+  환자번호      ← 첫 줄은 제목(있어도 되고 없어도 됨)
+  1234567
+  2345678
+  ...
+  ```
+  파일명 예: `환자목록.xlsx`
+
+---
+
+## STEP 1. (VM, 인터넷 O) 설치 파일 USB에 모으기
+
+1. 이 프로젝트 폴더 전체를 **USB에 복사**합니다.
+2. USB 안의 **`usb_준비_인터넷PC에서실행.bat`** 을 더블클릭합니다.
+3. 자동으로 진행됩니다:
+   - Python 설치 파일 다운로드
+   - (VM에 Python이 없으면) Python 자동 설치
+   - 필요한 패키지 전부 USB에 다운로드
+4. "Done! USB is ready" 가 보이면 완료. USB를 뽑습니다.
+
+> ※ 검은 창이 보이는 게 정상입니다. 끝까지 기다렸다가 아무 키나 누르면 닫힙니다.
+
+---
+
+## STEP 2. (내부망 PC) 설치하기
+
+1. USB를 내부망 PC에 꽂습니다.
+2. USB 안의 **`usb_설치_내부망PC에서실행.bat`** 을 더블클릭합니다.
+3. 자동으로 진행됩니다:
+   - Python 설치 (없으면 — **설치 창에서 "Add python.exe to PATH" 꼭 체크**)
+   - 프로그램을 **바탕화면 `periapical-view` 폴더**에 복사
+   - 패키지 오프라인 설치
+4. "Install complete!" 가 보이면 완료.
+
+> Python을 새로 설치했다면, 창을 닫고 **`usb_설치` 를 한 번 더 실행**하세요.
+> (PATH 반영을 위해)
+
+---
+
+## STEP 3. (내부망 PC) 설치 점검 — Infinitt 없이 안전 확인
+
+바탕화면 `periapical-view` 폴더에서 명령 프롬프트를 열거나,
+폴더 안에서 주소창에 `cmd` 입력 후 Enter → 아래 입력:
+
+```
+run.bat --check
 ```
 
-## config.yaml 주요 설정
+화면에 점검 결과가 나옵니다. **1번(패키지)이 전부 OK** 면 설치 성공입니다.
 
-| 항목 | 설명 |
+엑셀까지 같이 점검하려면:
+
+```
+run.bat --check --excel C:\경로\환자목록.xlsx
+```
+
+→ "환자 280명 읽음" 이 보이면 엑셀도 정상입니다.
+
+---
+
+## STEP 4. (내부망 PC) Infinitt 위치 기록 — 최초 1회만
+
+이 단계가 **가장 중요**합니다. 프로그램에게 "Infinitt 화면에서 어디를 클릭해야 하는지"를
+한 번 가르쳐 줍니다.
+
+1. **Infinitt를 먼저 켭니다.**
+2. 명령 프롬프트에서:
+   ```
+   run.bat --setup
+   ```
+3. 화면 안내에 따라 순서대로 **마우스로 직접 클릭**합니다:
+
+   | 단계 | 무엇을 클릭? |
+   |------|------------|
+   | 1 | 환자번호 **검색창** |
+   | 2 | (아무 환자 검색 후) 스터디 목록 **첫 번째 줄** |
+   | 3 | 스터디 목록 **두 번째 줄** |
+   | 4 | (스터디 하나 열고) 이미지 칸 개수 입력 후, 이미지 칸을 하나씩 클릭 |
+   | 5 | 스터디에서 목록으로 **돌아가는 버튼** |
+
+4. 끝나면 `ui_positions.json` 파일에 저장됩니다.
+
+> 한 번 해두면 다시 안 해도 됩니다. Infinitt 창 위치/크기가 바뀌면 다시 하세요.
+
+---
+
+## STEP 5. (내부망 PC) 최종 점검 후 실행
+
+1. Infinitt를 켜둔 채로 최종 점검:
+   ```
+   run.bat --check --excel C:\경로\환자목록.xlsx
+   ```
+   모든 항목이 OK / 정상이면:
+
+2. **본 실행 (280명 자동 수집):**
+   ```
+   run.bat --excel C:\경로\환자목록.xlsx
+   ```
+
+3. 실행 중에는 **마우스·키보드를 건드리지 마세요.** 프로그램이 자동으로 조작합니다.
+
+> **긴급 정지:** 마우스를 화면 **왼쪽 위 모서리로 빠르게** 가져가면 즉시 멈춥니다.
+
+---
+
+## 중간에 멈췄거나 꺼졌을 때
+
+다시 실행하면 **이미 끝난 환자는 건너뛰고** 이어서 진행합니다.
+
+```
+run.bat --excel C:\경로\환자목록.xlsx
+```
+
+특정 번호부터 다시 하려면:
+
+```
+run.bat --excel C:\경로\환자목록.xlsx --resume 50
+```
+
+---
+
+## 결과물 위치
+
+저장된 사진은 `config.yaml` 의 `infinitt_save_dir` 폴더에 쌓입니다 (기본 `C:\infinitt_export`):
+
+```
+C:\infinitt_export\
+  1234567\               ← 환자번호
+    study_01\            ← 가장 최근 내원
+      img_01.png
+      img_02.png
+    study_02\            ← 그 다음 내원
+      ...
+  2345678\
+    ...
+```
+
+실패한 환자 목록은 `output\failed_patients.txt` 에 저장됩니다.
+
+---
+
+## 자주 막히는 부분
+
+| 증상 | 해결 |
 |------|------|
-| `pacs.url` | PACS 서버 주소 (예: `http://192.168.1.100:8080`) |
-| `pacs.login_path` | 로그인 페이지 경로 |
-| `search.modality` | `IO` = 구내방사선(치근단), `PX` = 파노라마 |
-| `search.date_from/to` | 수집 기간 (YYYYMMDD) |
-| `search.max_studies` | 최대 수집 수 (`0` = 전체) |
-| `output.image_format` | `png` 또는 `jpeg` |
-| `deidentify.enabled` | AI 학습용 비식별화 여부 |
-| `browser.headless` | `false` = 브라우저 보이게 실행 (디버깅용) |
+| 창이 바로 꺼짐 | 최신 파일을 다시 받으세요. 이제 에러가 나면 메시지를 보여주고 멈춥니다 |
+| "venv not found" | `install.bat` (또는 `usb_설치`)을 먼저 실행 |
+| 저장 메뉴를 못 찾음 | `config.yaml` → `save_menu_items` 에 Infinitt 우클릭 메뉴의 **실제 글자**를 추가 |
+| 스터디를 안 넘어감 | `config.yaml` → `wait_after_open` 숫자를 키우세요 (예: 3 → 5) |
+| 목록으로 안 돌아감 | `config.yaml` → `back_key` 를 `escape` 또는 `backspace` 로 변경 |
+| 빈 칸도 클릭함 | 정상입니다. 빈 슬롯은 저장 실패로 그냥 넘어갑니다 |
 
-## Infinitt PACS 셀렉터 찾는 법
+---
 
-1. `python src/main.py --inspect` 실행 후 브라우저에서 F12
-2. 로그인 폼 → `input` 태그의 `name` 속성 확인 → `config.yaml` 수정
-3. 워크리스트 테이블 → `tr` 태그의 클래스명 확인
+## 설정 조정 (config.yaml)
 
-일반적인 Infinitt PACS 셀렉터 예시:
-```yaml
-selectors:
-  login:
-    username_field: "input[name='userId']"
-    password_field: "input[name='password']"
-    submit_button: "button#loginBtn"
-  worklist:
-    study_rows: "tr.wl-row"
-    study_link: "td.td-patientId"
-```
+| 항목 | 의미 | 기본값 |
+|------|------|--------|
+| `infinitt_save_dir` | 사진 저장 폴더 | `C:\infinitt_export` |
+| `save_extension` | 저장 파일 형식 | `png` |
+| `max_studies_per_patient` | 환자당 최대 스터디(내원) 수 | `20` |
+| `wait_after_search` | 검색 후 대기(초) | `2.0` |
+| `wait_after_open` | 스터디 열고 대기(초) | `3.0` |
+| `back_key` | 목록으로 돌아가는 키 | `escape` |
+| `save_menu_items` | 우클릭 저장 메뉴 후보 글자들 | 여러 개 |
+
+메모장으로 `config.yaml` 을 열어 수정하면 됩니다.
