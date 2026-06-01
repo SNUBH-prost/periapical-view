@@ -81,20 +81,25 @@ echo   Using: !PYTHON!
 "!PYTHON!" --version
 echo.
 
-:: ── 3. pip 패키지 다운로드 ────────────────────────────────────────
-echo [3/3] Downloading pip packages...
+:: ── 3. pip 패키지를 wheel로 빌드/다운로드 ─────────────────────────
+:: pip wheel 을 쓰면 .tar.gz(소스)도 이 PC에서 .whl 로 만들어 둠
+:: → 내부망에서는 빌드(setuptools) 필요 없이 바로 설치 가능
+echo [3/3] Building wheels for all packages...
 if not exist "%USB_ROOT%packages" mkdir "%USB_ROOT%packages"
 
-"!PYTHON!" -m pip download -r "%USB_ROOT%requirements.txt" -d "%USB_ROOT%packages" --platform win_amd64 --python-version 3.11 --only-binary=:all:
+:: 최신 빌드 도구 먼저 확보
+"!PYTHON!" -m pip install --upgrade pip setuptools wheel
+
+:: setuptools/wheel 자체도 오프라인 설치에 대비해 packages 에 담아둠
+"!PYTHON!" -m pip download pip setuptools wheel -d "%USB_ROOT%packages"
+
+:: 모든 의존성을 wheel 로 빌드해서 packages 에 저장
+"!PYTHON!" -m pip wheel -r "%USB_ROOT%requirements.txt" -w "%USB_ROOT%packages"
 
 if errorlevel 1 (
-    echo   Retrying without platform restriction...
-    "!PYTHON!" -m pip download -r "%USB_ROOT%requirements.txt" -d "%USB_ROOT%packages"
-    if errorlevel 1 (
-        echo [ERROR] Package download failed. Check internet connection.
-        pause
-        exit /b 1
-    )
+    echo [ERROR] Wheel build failed. Check internet connection and retry.
+    pause
+    exit /b 1
 )
 echo   OK.
 echo.

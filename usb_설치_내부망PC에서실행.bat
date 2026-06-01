@@ -84,7 +84,8 @@ if errorlevel 1 (
 )
 
 echo   Found packages in: %PKG_DIR%
-pip install --no-index --find-links "%PKG_DIR%" -r "%INSTALL_DIR%\requirements.txt"
+:: --no-build-isolation: 모든 게 wheel 이므로 빌드 불필요. 혹시 모를 빌드 시도 차단.
+pip install --no-index --find-links "%PKG_DIR%" --no-build-isolation -r "%INSTALL_DIR%\requirements.txt"
 
 if errorlevel 1 (
     echo.
