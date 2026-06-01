@@ -21,7 +21,6 @@ import time
 from pathlib import Path
 
 import pyautogui
-import win32clipboard
 import win32con
 import win32gui
 
@@ -97,41 +96,43 @@ def _bring_to_front(title_contains: str) -> bool:
 def _read_focused_row_text(title_contains: str) -> str:
     """
     현재 키보드 포커스가 있는 행의 텍스트를 읽는다.
-    UIA get_focus → 부모 행 텍스트 합치기 → 클립보드 순서로 시도.
+
+    pywinauto UIA get_focus() 로 포커스된 컨트롤을 얻고,
+    그 컨트롤 또는 부모/형제 셀들의 텍스트를 합쳐서 반환한다.
     """
-    # 방법 1: pywinauto UIA — 포커스된 컨트롤 읽기
     try:
         from pywinauto import Desktop
         ctrl = Desktop(backend="uia").get_focus()
-        if ctrl:
-            text = ctrl.window_text().strip()
-            if not text:
-                # 셀이 포커스된 경우 → 부모 행 전체 텍스트 합치기
-                try:
-                    siblings = ctrl.parent().children()
-                    text = "  ".join(c.window_text() for c in siblings if c.window_text().strip())
-                except Exception:
-                    pass
-            if text:
-                return text
+        if ctrl is None:
+            return ""
+
+        # 직접 텍스트가 있으면 사용
+        text = ctrl.window_text().strip()
+        if text:
+            # 셀 하나만 잡힌 경우 → 형제 셀까지 합쳐서 전체 행 텍스트 반환
+            try:
+                parent = ctrl.parent()
+                sibling_texts = [c.window_text().strip() for c in parent.children()]
+                full_row = "  ".join(t for t in sibling_texts if t)
+                if full_row:
+                    return full_row
+            except Exception:
+                pass
+            return text
+
+        # 직접 텍스트 없음 → 부모(행) 자식 셀 합치기
+        for ancestor in (ctrl.parent, lambda: ctrl.parent().parent()):
+            try:
+                row = ancestor()
+                children_texts = [c.window_text().strip() for c in row.children()]
+                full_row = "  ".join(t for t in children_texts if t)
+                if full_row:
+                    return full_row
+            except Exception:
+                pass
+
     except Exception as e:
         logger.debug(f"UIA get_focus: {e}")
-
-    # 방법 2: 클립보드 (Ctrl+C 후 읽기)
-    try:
-        pyautogui.hotkey("ctrl", "c")
-        time.sleep(0.15)
-        win32clipboard.OpenClipboard()
-        try:
-            text = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
-        except Exception:
-            text = ""
-        finally:
-            win32clipboard.CloseClipboard()
-        if text.strip():
-            return text.strip()
-    except Exception as e:
-        logger.debug(f"클립보드 읽기: {e}")
 
     return ""
 
