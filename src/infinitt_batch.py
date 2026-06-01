@@ -8,8 +8,7 @@
   5. 다음 환자 검색창으로 이동
 
 저장 구조:
-  infinitt_export/{patient_id}/{patient_id}(YYYY-MM-DD).png
-  (같은 날짜에 여러 장이면 ..._01.png, _02.png)
+  infinitt_export/{patient_id}/{patient_id}(YYYY-MM-DD)/  ← Convert Study가 여기에 저장
 """
 import datetime
 import json
@@ -153,8 +152,10 @@ def _scroll_and_collect_periapical_rows(
     ui_cfg: dict,
 ) -> list[dict]:
     """
-    목록을 스크롤하며 periapical 키워드 + 5년 내 날짜에 맞는 행 전체 수집.
-    반환: 조건에 맞는 행 목록 (가장 위 = 가장 최근)
+    검사명 정렬 후 목록을 끝까지 스크롤하며 키워드에 맞는 행을 모두 수집.
+    수집 후 5년 날짜 필터를 적용해 반환한다.
+
+    주의: 검사명 정렬 시 날짜가 섞이므로 날짜 기준 조기 종료를 하지 않는다.
     """
     keywords   = ui_cfg.get("study_name_filter", ["DS periapical view (implant)"])
     years_back = ui_cfg.get("years_back", 5)
@@ -162,63 +163,58 @@ def _scroll_and_collect_periapical_rows(
     delay      = ui_cfg.get("action_delay", 0.6)
     cutoff     = _cutoff_date(years_back)
 
-    # 스크롤 기준점: 목록 첫 번째 행 X 좌표, 목록 중앙 Y 쯤
     list_cx = positions["study_row_1"][0]
     list_cy = positions["study_row_1"][1]
 
-    # 스크롤 전 목록 맨 위로 이동
+    # 목록 맨 위로
     pyautogui.click(list_cx, list_cy)
     pyautogui.hotkey("ctrl", "home")
     time.sleep(delay)
 
-    collected: list[dict] = []
+    all_keyword_rows: list[dict] = []
     seen: set[str] = set()
-    stop_scrolling = False
 
     for page in range(max_scroll + 1):
         visible = _read_visible_rows(title_contains)
 
-        newly_added = 0
+        new_this_page = 0
         for row in visible:
-            key = row["text"][:60]
+            key = row["text"][:80]
             if key in seen:
                 continue
             seen.add(key)
+            new_this_page += 1
 
-            # 키워드 필터
             text_lower = row["text"].lower()
-            if not any(kw.lower() in text_lower for kw in keywords):
-                continue
+            if any(kw.lower() in text_lower for kw in keywords):
+                all_keyword_rows.append(row)
+                logger.debug(f"  키워드 일치: {row['text'][:60]}  날짜={row['date']}")
 
-            # 날짜 필터: 5년 이내만
-            d = row["date"]
-            if d and d < cutoff:
-                logger.debug(f"날짜 초과(5년 이전) → 수집 중단: {d}  행: {row['text'][:40]}")
-                stop_scrolling = True
-                break
-
-            collected.append(row)
-            newly_added += 1
-            logger.debug(f"  수집: {row['text'][:60]}  날짜={d}")
-
-        if stop_scrolling:
+        # 새로 보이는 행이 없으면 목록 끝
+        if page > 0 and new_this_page == 0:
+            logger.debug(f"  목록 끝 (page {page})")
             break
 
-        # 새로 읽힌 행이 없으면 목록 끝
-        if page > 0 and newly_added == 0:
-            break
-
-        # 한 페이지 아래로 스크롤
         pyautogui.click(list_cx, list_cy)
         pyautogui.press("pagedown")
         time.sleep(delay)
 
-    logger.info(f"  periapical 행 {len(collected)}개 발견 (5년 이내)")
-    return collected
+    # 날짜 필터: 5년 이내만, 최신순 정렬
+    in_period = [
+        r for r in all_keyword_rows
+        if r["date"] >= cutoff or not r["date"]   # 날짜 미상은 일단 포함
+    ]
+    in_period.sort(key=lambda r: r["date"], reverse=True)   # 최신순
+
+    logger.info(
+        f"  DS periapical view (implant) 전체 {len(all_keyword_rows)}개 발견 "
+        f"→ 5년 이내 {len(in_period)}개"
+    )
+    return in_period
 
 
 # ──────────────────────────────────────────────────────────────
-# 이미지 저장
+# 이미지 저장 — Convert Study (왼쪽 패널 우클릭)
 # ──────────────────────────────────────────────────────────────
 
 def _click_menu_item(menu_items: list[str], delay: float) -> bool:
@@ -242,14 +238,15 @@ def _click_menu_item(menu_items: list[str], delay: float) -> bool:
     return False
 
 
-def _handle_save_dialog(full_path: Path, save_btn_text: str, delay: float) -> bool:
-    full_path.parent.mkdir(parents=True, exist_ok=True)
-    path_str = str(full_path)
+def _handle_save_dialog(save_dir: Path, save_btn_text: str, delay: float) -> bool:
+    """저장 대화상자에서 경로를 입력하고 저장 버튼을 누른다."""
+    save_dir.mkdir(parents=True, exist_ok=True)
+    path_str = str(save_dir)
     time.sleep(delay * 2)
     try:
         from pywinauto import Desktop
         for win in Desktop(backend="uia").windows():
-            if any(k in win.window_text() for k in ("저장", "Save", "다른 이름", "Export", "내보내기")):
+            if any(k in win.window_text() for k in ("저장", "Save", "다른 이름", "Export", "내보내기", "Convert")):
                 try:
                     edit = win.child_window(control_type="Edit")
                     edit.set_focus()
@@ -271,15 +268,17 @@ def _handle_save_dialog(full_path: Path, save_btn_text: str, delay: float) -> bo
     return True
 
 
-def _save_slot(ix: int, iy: int, full_path: Path, ui_cfg: dict) -> bool:
-    delay       = ui_cfg.get("action_delay", 0.6)
-    menu_items  = ui_cfg.get("save_menu_items", ["Save Image", "이미지 저장"])
-    save_btn    = ui_cfg.get("save_dialog_button", "저장")
+def _convert_study(lx: int, ly: int, save_dir: Path, ui_cfg: dict) -> bool:
+    """왼쪽 패널 우클릭 → Convert Study → 저장 대화상자 처리."""
+    delay      = ui_cfg.get("action_delay", 0.6)
+    menu_items = ui_cfg.get("convert_study_menu", ["Convert Study", "Convert", "스터디 변환", "변환"])
+    save_btn   = ui_cfg.get("save_dialog_button", "저장")
 
-    pyautogui.rightClick(ix, iy)
+    pyautogui.rightClick(lx, ly)
     if not _click_menu_item(menu_items, delay):
+        logger.warning("Convert Study 메뉴를 찾지 못했습니다.")
         return False
-    return _handle_save_dialog(full_path, save_btn, delay)
+    return _handle_save_dialog(save_dir, save_btn, delay)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -307,10 +306,10 @@ def process_one_patient(
     title      = ui_cfg.get("window_title_contains", "Infinitt")
     ext        = ui_cfg.get("save_extension", "png").lstrip(".")
 
-    slots: list[list[int]] = positions.get("image_slots", [])
-    back_btn                = positions.get("back_button")
-    sort_header             = positions.get("sort_column_header")
-    sx, sy                  = positions["search_box"]
+    left_panel  = positions.get("left_panel")
+    back_btn    = positions.get("back_button")
+    sort_header = positions.get("sort_column_header")
+    sx, sy      = positions["search_box"]
 
     if not _bring_to_front(title):
         logger.warning(f"[{patient_id}] Infinitt 창 없음")
@@ -355,25 +354,19 @@ def process_one_patient(
             pyautogui.doubleClick(row["cx"], row["cy"])
             time.sleep(wait_open)
 
-            # 이미지 저장: 파일명 = 환자번호(YYYY-MM-DD)
-            # 같은 날짜에 여러 장이면 _01, _02 ... 를 뒤에 붙인다.
-            patient_dir = base_save_dir / patient_id
+            # 왼쪽 패널 우클릭 → Convert Study → 날짜 폴더에 저장
             date_dash = _yyyymmdd_to_dash(row_date)
-            multi = len(slots) > 1
-            saved = 0
-            for img_idx, (ix, iy) in enumerate(slots):
-                if multi:
-                    fname = f"{patient_id}({date_dash})_{img_idx + 1:02d}.{ext}"
-                else:
-                    fname = f"{patient_id}({date_dash}).{ext}"
-                full_path = patient_dir / fname
-                if _save_slot(ix, iy, full_path, ui_cfg):
-                    saved += 1
-                    time.sleep(delay * 0.5)
+            save_dir = base_save_dir / patient_id / f"{patient_id}({date_dash})"
+            ok = False
+            if left_panel:
+                ok = _convert_study(left_panel[0], left_panel[1], save_dir, ui_cfg)
+            else:
+                logger.warning(f"[{patient_id}] left_panel 미설정 — --setup 을 다시 하세요.")
 
-            total_images  += saved
             total_studies += 1
-            logger.info(f"  → {saved}장 저장")
+            if ok:
+                total_images += 1   # Convert Study는 한 번에 전체 저장
+            logger.info(f"  → {'저장 완료' if ok else '저장 실패'}  ({save_dir})")
 
             # 목록으로 복귀
             if back_btn:
@@ -472,19 +465,13 @@ def run_setup() -> None:
         pos["study_row_height"] = row_height
         print(f"    → 행 높이 자동 계산: {row_height}px")
 
-        # STEP 5: 이미지 슬롯
+        # STEP 5: 왼쪽 패널 (Convert Study 우클릭 위치)
         print()
-        print("  [STEP 5/6] 이미지 슬롯")
-        print("  ※ 스터디를 하나 열어서 치근단 사진이 보이는 상태로 만드세요.")
-        n_str = input("\n  보이는 이미지 칸(슬롯) 수를 입력하세요 (예: 14): ").strip()
-        n_slots = int(n_str) if n_str.isdigit() and int(n_str) > 0 else 1
-
-        slots = []
-        for i in range(n_slots):
-            slot = list(_wait_click(f"이미지 슬롯 {i+1}/{n_slots} 중앙을 클릭하세요"))
-            slots.append(slot)
-        pos["image_slots"] = slots
-        print(f"    → {n_slots}개 슬롯 기록 완료")
+        print("  [STEP 5/6] 왼쪽 썸네일 패널")
+        print("  ※ 스터디를 하나 열어서 왼쪽 작은 사진 창이 보이는 상태로 만드세요.")
+        print("     이 위치를 우클릭하면 'Convert Study' 메뉴가 뜨는 곳입니다.")
+        pos["left_panel"] = list(_wait_click("왼쪽 썸네일 패널 위를 클릭하세요"))
+        print(f"    → 왼쪽 패널 위치 기록 완료")
 
         # STEP 6: 뒤로가기
         print()

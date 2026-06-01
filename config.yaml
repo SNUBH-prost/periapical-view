@@ -16,18 +16,13 @@ ui:
   # Infinitt 창 제목에 포함된 문자열 (일부만 입력해도 됨)
   window_title_contains: "Infinitt"
 
-  # 우클릭 메뉴에서 클릭할 항목 이름 (실제 메뉴 텍스트에 맞게 수정)
-  # 한글/영문 모두 입력해두면 자동으로 찾음
-  save_menu_items:
-    - "Save Image"
-    - "Export"
-    - "이미지 저장"
-    - "저장"
-    - "Export Image"
-    - "Save as"
+  # 왼쪽 썸네일 패널 우클릭 시 나오는 Convert Study 메뉴 이름
+  # Infinitt 실제 메뉴 텍스트에 맞게 수정 (부분 일치, 대소문자 무관)
+  convert_study_menu:
+    - "Convert Study"
     - "Convert"
-    - "JPEG로 저장"
-    - "PNG로 저장"
+    - "스터디 변환"
+    - "변환"
 
   # 이미지 저장 대화상자가 뜰 때 저장 버튼 텍스트
   save_dialog_button: "저장"
