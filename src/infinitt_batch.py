@@ -8,7 +8,8 @@
   5. 다음 환자 검색창으로 이동
 
 저장 구조:
-  infinitt_export/{patient_id}/study_01/img_01.png ...
+  infinitt_export/{patient_id}/{patient_id}(YYYY-MM-DD).png
+  (같은 날짜에 여러 장이면 ..._01.png, _02.png)
 """
 import datetime
 import json
@@ -37,6 +38,13 @@ def _cutoff_date(years_back: int = 5) -> str:
     """N년 전 날짜를 YYYYMMDD 문자열로 반환."""
     cutoff = datetime.date.today() - datetime.timedelta(days=years_back * 365)
     return cutoff.strftime("%Y%m%d")
+
+
+def _yyyymmdd_to_dash(yyyymmdd: str) -> str:
+    """YYYYMMDD → YYYY-MM-DD. 형식이 안 맞으면 원본 반환."""
+    if len(yyyymmdd) == 8 and yyyymmdd.isdigit():
+        return f"{yyyymmdd[0:4]}-{yyyymmdd[4:6]}-{yyyymmdd[6:8]}"
+    return yyyymmdd
 
 
 def _parse_date_to_yyyymmdd(text: str) -> str:
@@ -347,11 +355,18 @@ def process_one_patient(
             pyautogui.doubleClick(row["cx"], row["cy"])
             time.sleep(wait_open)
 
-            # 이미지 슬롯 저장
-            study_dir = base_save_dir / patient_id / f"study_{study_num:02d}_{row_date}"
+            # 이미지 저장: 파일명 = 환자번호(YYYY-MM-DD)
+            # 같은 날짜에 여러 장이면 _01, _02 ... 를 뒤에 붙인다.
+            patient_dir = base_save_dir / patient_id
+            date_dash = _yyyymmdd_to_dash(row_date)
+            multi = len(slots) > 1
             saved = 0
             for img_idx, (ix, iy) in enumerate(slots):
-                full_path = study_dir / f"img_{img_idx + 1:02d}.{ext}"
+                if multi:
+                    fname = f"{patient_id}({date_dash})_{img_idx + 1:02d}.{ext}"
+                else:
+                    fname = f"{patient_id}({date_dash}).{ext}"
+                full_path = patient_dir / fname
                 if _save_slot(ix, iy, full_path, ui_cfg):
                     saved += 1
                     time.sleep(delay * 0.5)
