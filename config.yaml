@@ -64,7 +64,7 @@ ui:
   # 수집할 검사명 키워드 (대소문자 무관, 부분 일치)
   # Infinitt 검사명이 정확히 "DS periapical view (implant)" 인 경우
   study_name_filter:
-    - "periapical view (implant)"
+    - "DS periapical view (implant)"
 
   # 최근 몇 년치를 수집할지 (기본 5년)
   years_back: 5

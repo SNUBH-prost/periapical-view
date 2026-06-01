@@ -148,7 +148,7 @@ def _scroll_and_collect_periapical_rows(
     목록을 스크롤하며 periapical 키워드 + 5년 내 날짜에 맞는 행 전체 수집.
     반환: 조건에 맞는 행 목록 (가장 위 = 가장 최근)
     """
-    keywords   = ui_cfg.get("study_name_filter", ["periapical view (implant)"])
+    keywords   = ui_cfg.get("study_name_filter", ["DS periapical view (implant)"])
     years_back = ui_cfg.get("years_back", 5)
     max_scroll = ui_cfg.get("max_scroll_pages", 30)
     delay      = ui_cfg.get("action_delay", 0.6)
@@ -524,7 +524,7 @@ def run_batch(patient_ids: list[str], cfg: dict, dirs: dict, resume_from: int = 
     if resume_from:
         remaining = remaining[resume_from:]
 
-    keywords   = ui_cfg.get("study_name_filter", ["periapical view (implant)"])
+    keywords   = ui_cfg.get("study_name_filter", ["DS periapical view (implant)"])
     years_back = ui_cfg.get("years_back", 5)
 
     logger.info("=" * 65)
