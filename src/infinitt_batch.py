@@ -1,14 +1,13 @@
 """Infinitt 배치 자동화.
 
+전제: Infinitt에서 검사명 필터를 'DS periapical view (implant)' 로 미리 설정해둔 상태.
+
 흐름 (환자 1명):
-  1. 환자번호 검색
-  2. 검사명 컬럼 클릭 → 정렬
-  3. ↓ 방향키로 한 행씩 내려가며 'DS periapical view (implant)' 구간 탐색
-     - 포커스된 행 텍스트를 UIA / 클립보드로 읽음
-     - 구간 진입 후 날짜가 5년 초과 or 구간 종료 → 중단
-  4. 매칭 행에서 Enter → 스터디 열기 → 왼쪽 패널 우클릭 → Convert Study
-  5. 뒤로 가기 → 다음 행으로 계속
-  6. 완료 후 검색창으로 커서 이동
+  1. 환자번호 검색 → 목록에 DS periapical 항목들만 표시됨
+  2. 목록 맨 위부터 한 행씩 클릭 → 날짜 읽기
+  3. 5년 이내이면 더블클릭으로 열고 → 왼쪽 패널 우클릭 → Convert Study
+  4. 뒤로 가기 → 다음 행 반복
+  5. 5년 초과 or 빈 행 → 중단, 다음 환자로
 
 저장 구조:
   infinitt_export/{patient_id}/{patient_id}(YYYY-MM-DD)/
@@ -90,15 +89,13 @@ def _bring_to_front(title_contains: str) -> bool:
 
 
 # ──────────────────────────────────────────────────────────────
-# 현재 선택된 행 텍스트 읽기
+# 클릭된 행의 텍스트 읽기 (UIA)
 # ──────────────────────────────────────────────────────────────
 
 def _read_focused_row_text(title_contains: str) -> str:
     """
-    현재 키보드 포커스가 있는 행의 텍스트를 읽는다.
-
-    pywinauto UIA get_focus() 로 포커스된 컨트롤을 얻고,
-    그 컨트롤 또는 부모/형제 셀들의 텍스트를 합쳐서 반환한다.
+    클릭/선택된 행의 텍스트를 UIA get_focus()로 읽는다.
+    셀 단위로 포커스된 경우 형제 셀까지 합쳐 전체 행 텍스트를 반환.
     """
     try:
         from pywinauto import Desktop
@@ -106,28 +103,26 @@ def _read_focused_row_text(title_contains: str) -> str:
         if ctrl is None:
             return ""
 
-        # 직접 텍스트가 있으면 사용
         text = ctrl.window_text().strip()
         if text:
-            # 셀 하나만 잡힌 경우 → 형제 셀까지 합쳐서 전체 행 텍스트 반환
+            # 형제 셀까지 합쳐서 전체 행 반환 (날짜 셀 포함)
             try:
-                parent = ctrl.parent()
-                sibling_texts = [c.window_text().strip() for c in parent.children()]
-                full_row = "  ".join(t for t in sibling_texts if t)
-                if full_row:
-                    return full_row
+                siblings = [c.window_text().strip() for c in ctrl.parent().children()]
+                full = "  ".join(s for s in siblings if s)
+                if full:
+                    return full
             except Exception:
                 pass
             return text
 
-        # 직접 텍스트 없음 → 부모(행) 자식 셀 합치기
-        for ancestor in (ctrl.parent, lambda: ctrl.parent().parent()):
+        # 텍스트 없음 → 부모·조부모 자식 셀 합치기
+        for get_ancestor in (lambda: ctrl.parent(), lambda: ctrl.parent().parent()):
             try:
-                row = ancestor()
-                children_texts = [c.window_text().strip() for c in row.children()]
-                full_row = "  ".join(t for t in children_texts if t)
-                if full_row:
-                    return full_row
+                row = get_ancestor()
+                cells = [c.window_text().strip() for c in row.children()]
+                full = "  ".join(c for c in cells if c)
+                if full:
+                    return full
             except Exception:
                 pass
 
@@ -192,7 +187,7 @@ def _handle_save_dialog(save_dir: Path, save_btn_text: str, delay: float) -> boo
 
 
 def _convert_study(lx: int, ly: int, save_dir: Path, ui_cfg: dict) -> bool:
-    """왼쪽 패널 우클릭 → Convert Study → 저장 대화상자."""
+    """왼쪽 패널 우클릭 → Convert Study → 저장."""
     delay      = ui_cfg.get("action_delay", 0.6)
     menu_items = ui_cfg.get("convert_study_menu", ["Convert Study", "Convert", "스터디 변환", "변환"])
     save_btn   = ui_cfg.get("save_dialog_button", "저장")
@@ -214,26 +209,29 @@ def process_one_patient(
     cfg: dict,
     base_save_dir: Path,
 ) -> dict:
+    """
+    목록은 이미 DS periapical view (implant) 로 필터된 상태.
+    행 1번 좌표 + 행 높이로 각 행을 클릭해 날짜 확인 → 5년 이내이면 더블클릭 → Convert Study.
+    """
     ui_cfg      = cfg.get("ui", {})
     delay       = ui_cfg.get("action_delay", 0.6)
     wait_search = ui_cfg.get("wait_after_search", 2.0)
     wait_open   = ui_cfg.get("wait_after_open", 3.0)
     back_key    = ui_cfg.get("back_key", "escape")
     title       = ui_cfg.get("window_title_contains", "Infinitt")
-    keywords    = ui_cfg.get("study_name_filter", ["DS periapical view (implant)"])
     years_back  = ui_cfg.get("years_back", 5)
-    max_rows    = ui_cfg.get("max_rows_scan", 500)
+    max_studies = ui_cfg.get("max_studies_per_patient", 30)
     cutoff      = _cutoff_date(years_back)
 
-    list_x, list_y = positions["study_row_1"]
-    left_panel     = positions.get("left_panel")
-    back_btn       = positions.get("back_button")
-    sort_header    = positions.get("sort_column_header")
-    sx, sy         = positions["search_box"]
+    row_x, row_y   = positions["study_row_1"]
+    row_height      = positions.get("study_row_height", 25)
+    left_panel      = positions.get("left_panel")
+    back_btn        = positions.get("back_button")
+    sx, sy          = positions["search_box"]
 
     if not _bring_to_front(title):
         logger.warning(f"[{patient_id}] Infinitt 창 없음")
-        return {"studies": 0, "images": 0, "ok": False}
+        return {"studies": 0, "ok": False}
 
     time.sleep(delay)
 
@@ -245,81 +243,63 @@ def process_one_patient(
     pyautogui.press("enter")
     time.sleep(wait_search)
 
-    # ② 검사명 컬럼 클릭 → 정렬
-    if sort_header:
-        pyautogui.click(sort_header[0], sort_header[1])
-        time.sleep(delay * 2)
-    else:
-        logger.warning(f"[{patient_id}] sort_column_header 미설정 — --setup 다시 하세요.")
-
-    # ③ 목록 포커스 & 맨 위로
-    pyautogui.click(list_x, list_y)
-    time.sleep(delay)
+    # ② 목록 맨 위로
+    pyautogui.click(row_x, row_y)
+    time.sleep(0.3)
     pyautogui.hotkey("ctrl", "home")
     time.sleep(delay)
 
-    # ④ ↓ 방향키로 행 탐색 + 매칭 시 즉시 처리
-    in_group     = False
     total_studies = 0
 
-    for _ in range(max_rows):
+    for i in range(max_studies):
+        y = row_y + i * row_height
+
+        # 해당 행 클릭(선택)
+        pyautogui.click(row_x, y)
+        time.sleep(0.3)
+
+        # 날짜 읽기
         text = _read_focused_row_text(title)
-        is_match = bool(text) and any(kw.lower() in text.lower() for kw in keywords)
-
-        if is_match:
-            in_group = True
-            date = _parse_date_to_yyyymmdd(text)
-
-            if date and date < cutoff:
-                logger.debug(f"[{patient_id}] 5년 초과({date}) → 중단")
-                break
-
-            date_dash = _yyyymmdd_to_dash(date) if date else "unknown"
-            save_dir  = base_save_dir / patient_id / f"{patient_id}({date_dash})"
-            total_studies += 1
-            logger.info(f"[{patient_id}] study {total_studies}  날짜={date_dash}")
-
-            # 스터디 열기 (Enter)
-            pyautogui.press("enter")
-            time.sleep(wait_open)
-
-            # 왼쪽 패널 우클릭 → Convert Study
-            if left_panel:
-                ok = _convert_study(left_panel[0], left_panel[1], save_dir, ui_cfg)
-                logger.info(f"  → {'저장 완료' if ok else '저장 실패'}  {save_dir.name}")
-            else:
-                logger.warning(f"[{patient_id}] left_panel 미설정 — --setup 다시 하세요.")
-
-            # 목록으로 복귀
-            if back_btn:
-                pyautogui.click(back_btn[0], back_btn[1])
-            else:
-                pyautogui.press(back_key)
-            time.sleep(delay)
-
-            # 복귀 후 목록 재포커스 → 다음 행으로
-            pyautogui.press("down")
-            time.sleep(0.1)
-
-        elif in_group:
-            # 구간 벗어남 → 종료
-            logger.debug(f"[{patient_id}] 구간 벗어남 → 중단")
+        if not text:
+            logger.debug(f"[{patient_id}] 행 {i+1}: 텍스트 없음 → 목록 끝")
             break
+
+        date = _parse_date_to_yyyymmdd(text)
+        logger.debug(f"[{patient_id}] 행 {i+1}: date={date}  text={text[:60]}")
+
+        if date and date < cutoff:
+            logger.info(f"[{patient_id}] 5년 초과({date}) → 중단")
+            break
+
+        date_dash = _yyyymmdd_to_dash(date) if date else "unknown"
+        save_dir  = base_save_dir / patient_id / f"{patient_id}({date_dash})"
+        total_studies += 1
+        logger.info(f"[{patient_id}] study {total_studies}  날짜={date_dash}")
+
+        # 더블클릭으로 스터디 열기
+        pyautogui.doubleClick(row_x, y)
+        time.sleep(wait_open)
+
+        # 왼쪽 패널 우클릭 → Convert Study
+        if left_panel:
+            ok = _convert_study(left_panel[0], left_panel[1], save_dir, ui_cfg)
+            logger.info(f"  → {'저장 완료' if ok else '저장 실패'}  {save_dir.name}")
         else:
-            # 아직 구간 전 → 계속 아래로
-            pyautogui.press("down")
-            time.sleep(0.05)
+            logger.warning(f"[{patient_id}] left_panel 미설정 — --setup 다시 하세요.")
 
-    logger.info(f"[{patient_id}] {total_studies}개 스터디 처리 완료")
+        # 목록으로 복귀
+        if back_btn:
+            pyautogui.click(back_btn[0], back_btn[1])
+        else:
+            pyautogui.press(back_key)
+        time.sleep(delay)
 
-    # ⑤ 검색창으로 커서 이동
+    logger.info(f"[{patient_id}] 완료: {total_studies}개")
+
+    # 다음 환자 준비
     _return_to_search(sx, sy, delay)
 
-    return {
-        "studies": total_studies,
-        "images":  total_studies,
-        "ok":      total_studies > 0,
-    }
+    return {"studies": total_studies, "ok": total_studies > 0}
 
 
 def _return_to_search(sx: int, sy: int, delay: float) -> None:
@@ -330,7 +310,7 @@ def _return_to_search(sx: int, sy: int, delay: float) -> None:
 
 
 # ──────────────────────────────────────────────────────────────
-# Setup 마법사  (5단계)
+# Setup 마법사  (4단계)
 # ──────────────────────────────────────────────────────────────
 
 def _wait_click(prompt: str, timeout: int = 40) -> tuple[int, int]:
@@ -368,32 +348,46 @@ def run_setup() -> None:
 
     try:
         # STEP 1: 검색창
-        print("  [STEP 1/5] 환자번호 검색창")
+        print("  [STEP 1/4] 환자번호 검색창")
         pos["search_box"] = list(_wait_click("환자번호를 입력하는 검색창을 클릭하세요"))
 
-        # STEP 2: 검사명 컬럼 헤더
+        # STEP 2: 스터디 목록 첫 번째 행 + 행 높이 자동 측정
         print()
-        print("  [STEP 2/5] '검사명' 컬럼 헤더")
-        print("  ※ 아무 환자로 검색해서 스터디 목록이 보이는 상태로 만드세요.")
-        pos["sort_column_header"] = list(_wait_click("검사명 컬럼 헤더를 클릭하세요 (정렬에 사용)"))
-
-        # STEP 3: 스터디 목록 첫 번째 행
-        print()
-        print("  [STEP 3/5] 스터디 목록 — 첫 번째 행")
-        print("  ※ 목록에서 아무 행이나 첫 번째 행을 클릭하세요.")
-        print("     (방향키 탐색의 시작점으로만 사용됩니다)")
+        print("  [STEP 2/4] 스터디 목록 — 첫 번째 행")
+        print("  ※ 아무 환자 검색 후 목록이 보이는 상태에서 첫 번째 행을 클릭하세요.")
         pos["study_row_1"] = list(_wait_click("스터디 목록의 첫 번째 데이터 행을 클릭하세요"))
 
-        # STEP 4: 왼쪽 패널 (Convert Study 우클릭 위치)
+        # 행 높이 자동 측정: Down 한 번 누르고 UIA로 위치 읽기
+        print("    행 높이 자동 측정 중...", end="", flush=True)
+        row_height = 25  # 기본값
+        try:
+            pyautogui.press("down")
+            time.sleep(0.4)
+            from pywinauto import Desktop
+            ctrl = Desktop(backend="uia").get_focus()
+            if ctrl:
+                rect = ctrl.rectangle()
+                y2 = (rect.top + rect.bottom) // 2
+                measured = abs(y2 - pos["study_row_1"][1])
+                if 10 < measured < 100:
+                    row_height = measured
+            pyautogui.press("up")
+            time.sleep(0.2)
+        except Exception:
+            pass
+        pos["study_row_height"] = row_height
+        print(f" {row_height}px")
+
+        # STEP 3: 왼쪽 썸네일 패널
         print()
-        print("  [STEP 4/5] 왼쪽 썸네일 패널")
+        print("  [STEP 3/4] 왼쪽 썸네일 패널 (Convert Study)")
         print("  ※ 스터디를 하나 열어서 왼쪽 작은 사진 창이 보이는 상태로 만드세요.")
-        print("     이 위치를 우클릭하면 'Convert Study' 메뉴가 뜨는 곳입니다.")
+        print("     우클릭하면 'Convert Study' 메뉴가 뜨는 곳을 클릭하세요.")
         pos["left_panel"] = list(_wait_click("왼쪽 썸네일 패널 위를 클릭하세요"))
 
-        # STEP 5: 뒤로가기
+        # STEP 4: 뒤로가기
         print()
-        print("  [STEP 5/5] 뒤로 가기 버튼")
+        print("  [STEP 4/4] 뒤로 가기 버튼")
         print("  스터디에서 목록으로 돌아가는 버튼을 클릭하세요.")
         print("  Esc 키로 돌아간다면 아무 곳이나 클릭 후 config.yaml의 back_key를 escape로 유지.")
         pos["back_button"] = list(_wait_click("뒤로 가기 버튼을 클릭하세요"))
@@ -444,20 +438,18 @@ def run_batch(patient_ids: list[str], cfg: dict, dirs: dict, resume_from: int = 
     if resume_from:
         remaining = remaining[resume_from:]
 
-    keywords   = ui_cfg.get("study_name_filter", ["DS periapical view (implant)"])
     years_back = ui_cfg.get("years_back", 5)
 
     logger.info("=" * 65)
     logger.info("배치 시작")
-    logger.info(f"  전체 환자    : {len(patient_ids)}명")
-    logger.info(f"  처리 예정    : {len(remaining)}명")
-    logger.info(f"  검색 키워드  : {keywords}")
-    logger.info(f"  수집 기간    : 최근 {years_back}년")
-    logger.info(f"  저장 폴더    : {base_save_dir}")
-    logger.info("  긴급 정지    : 마우스를 화면 왼쪽 위 모서리로 빠르게 이동")
+    logger.info(f"  전체 환자  : {len(patient_ids)}명")
+    logger.info(f"  처리 예정  : {len(remaining)}명")
+    logger.info(f"  수집 기간  : 최근 {years_back}년")
+    logger.info(f"  저장 폴더  : {base_save_dir}")
+    logger.info("  긴급 정지  : 마우스를 화면 왼쪽 위 모서리로 빠르게 이동")
     logger.info("=" * 65)
 
-    total_images = 0
+    total = 0
 
     for i, pid in enumerate(remaining, 1):
         try:
@@ -466,14 +458,11 @@ def run_batch(patient_ids: list[str], cfg: dict, dirs: dict, resume_from: int = 
 
             if result["ok"]:
                 done.append(pid)
-                total_images += result["images"]
-                logger.info(
-                    f"  완료: {result['studies']}개 스터디"
-                    f"  (누적 {total_images}건)"
-                )
+                total += result["studies"]
+                logger.info(f"  완료: {result['studies']}개 스터디  (누적 {total}건)")
             else:
                 failed.append(pid)
-                logger.warning("  해당 기간 내 DS periapical view 없음 — 건너뜀")
+                logger.warning("  5년 이내 DS periapical 없음 — 건너뜀")
 
         except pyautogui.FailSafeException:
             logger.warning("긴급 정지!")
@@ -484,13 +473,13 @@ def run_batch(patient_ids: list[str], cfg: dict, dirs: dict, resume_from: int = 
         finally:
             progress_file.write_text(
                 json.dumps(
-                    {"done": done, "failed": failed, "total_images": total_images},
+                    {"done": done, "failed": failed, "total": total},
                     ensure_ascii=False, indent=2,
                 )
             )
 
     logger.info("=" * 65)
-    logger.info(f"완료  성공: {len(done)}명 / 실패: {len(failed)}명 / 총 {total_images}건")
+    logger.info(f"완료  성공: {len(done)}명 / 실패: {len(failed)}명 / 총 {total}건")
 
     if failed:
         failed_file = dirs["base"] / "failed_patients.txt"
