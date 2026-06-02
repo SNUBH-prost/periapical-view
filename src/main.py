@@ -235,14 +235,14 @@ def cmd_check(args, cfg: dict, dirs: dict) -> None:
     if pos_file.exists():
         try:
             pos = json.loads(pos_file.read_text())
-            n_slots = len(pos.get("image_slots", []))
-            print(f"    OK   검색창       : {pos.get('search_box')}")
-            print(f"    OK   스터디 행 높이: {pos.get('study_row_height')}px")
-            print(f"    OK   이미지 슬롯   : {n_slots}개")
-            print(f"    OK   뒤로가기 키   : {cfg.get('ui', {}).get('back_key', 'escape')}")
-            if n_slots == 0:
-                print("    경고: 이미지 슬롯이 0개입니다. run.bat --setup 을 다시 하세요.")
-                ok = False
+            required = {"search_box": "검색창", "study_row_1": "목록 첫 행", "left_panel": "왼쪽 패널", "back_button": "뒤로가기"}
+            for key, label in required.items():
+                if pos.get(key):
+                    print(f"    OK   {label:12s}: {pos[key]}")
+                else:
+                    print(f"    없음 {label:12s}: run.bat --setup 을 다시 하세요.")
+                    ok = False
+            print(f"    OK   행 높이      : {pos.get('study_row_height', '(자동측정 안됨)')}px")
         except Exception as e:
             print(f"    오류: ui_positions.json을 읽을 수 없습니다 ({e})")
             ok = False
