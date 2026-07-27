@@ -175,17 +175,27 @@ def build(raw, hba1c_path, template, out):
     cohort = None            # 연구 대상 환자 집합
     dm_by_pat = {}           # 환자 → {열이름: 값} (기존 수기 당뇨/투약)
     out_by_pt = {}           # (환자,치아) → {열이름: 값} (기존 수기 결과)
+    pat_serial = {}          # 환자 → 원본 명단의 Serial No.
+    pat_order = {}           # 환자 → 원본 명단 등장 순서(순번 없을 때 백업)
     if template:
         trows = list(load_workbook(template, data_only=True).active.iter_rows(values_only=True))
         thdr = [str(x).strip() if x is not None else "" for x in trows[0]]
         HDR = [h for h in trows[0] if h is not None]
         ti = {name: i for i, name in enumerate(thdr)}
         pat_i = ti.get("환자번호"); site_i = ti.get("임플란트 식립 부위(상악/하악)")
+        serial_i = ti.get("Serial No.")
         cohort = set()
         for row in trows[1:]:
             if pat_i is None or pat_i >= len(row) or row[pat_i] in (None, ""):
                 continue
             p = str(row[pat_i]); cohort.add(p)
+            pat_order.setdefault(p, len(pat_order))
+            if p not in pat_serial and serial_i is not None and serial_i < len(row) \
+                    and row[serial_i] not in (None, ""):
+                try:
+                    pat_serial[p] = int(float(row[serial_i]))
+                except (ValueError, TypeError):
+                    pass
             for name in DM_COLS:
                 j = ti.get(name)
                 if j is not None and j < len(row) and row[j] not in (None, ""):
@@ -205,10 +215,20 @@ def build(raw, hba1c_path, template, out):
                 return i
         return None
 
-    # 코호트만 남기고, 환자→치아→식립일 순 정렬
+    # 코호트만 남김
     if cohort is not None:
         rows = [r for r in rows if str(r[1]) in cohort]
-    rows.sort(key=lambda r: (str(r[1]), int(r[17].lstrip("#") or 0), r[5] or ""))
+
+    # 순번: 원본 명단(연구시트)의 Serial No. 순서를 그대로 따른다.
+    #   명단에 순번이 없으면 명단 등장 순서, 그것도 없으면 환자번호 순.
+    _base = (max(pat_serial.values()) + 1) if pat_serial else 0
+    def _pat_key(p):
+        if p in pat_serial:
+            return (0, pat_serial[p])
+        if p in pat_order:
+            return (1, pat_order[p])
+        return (2, p)
+    rows.sort(key=lambda r: (_pat_key(str(r[1])), int(r[17].lstrip("#") or 0), r[5] or ""))
 
     def L(name):
         i = col(name)
@@ -216,8 +236,10 @@ def build(raw, hba1c_path, template, out):
 
     wb = Workbook(); ws = wb.active
     ws.append(HDR + HELP_HEADERS)
-    serial = 0
     prev_pat = None
+    cur_serial = None
+    fallback = _base
+    n_pat = 0
     n_isq = n_hb = 0
     data_row = 1  # 헤더가 1행
     row_serials = []
@@ -234,11 +256,15 @@ def build(raw, hba1c_path, template, out):
             if i is not None:
                 line[i] = val
 
-        # Serial No. — 같은 환자면 같은 번호
+        # Serial No. — 원본 명단의 순번을 그대로, 같은 환자면 같은 번호
         if pat != prev_pat:
-            serial += 1
             prev_pat = pat
-        put("Serial No.", serial)
+            n_pat += 1
+            cur_serial = pat_serial.get(pat)
+            if cur_serial is None:
+                cur_serial = fallback
+                fallback += 1
+        put("Serial No.", cur_serial)
         put("환자번호", pat)
         put("성별", sex)
         put("생년월일", _as_date(birth))
@@ -284,12 +310,12 @@ def build(raw, hba1c_path, template, out):
 
         line += [tooth, r[18], r[19]]
         ws.append(line)
-        row_serials.append(serial)
+        row_serials.append(n_pat)   # 띠 색은 환자 등장 순서로 교대(순번 간격 무관)
 
     _style(ws, HDR, HELP_HEADERS, col, row_serials)
     wb.save(out)
     print(f"저장 → {out}")
-    print(f"임플란트 {len(rows)}건 | 환자 {serial}명 | ISQ 채움 {n_isq} | HbA1c(술전) 채움 {n_hb}")
+    print(f"임플란트 {len(rows)}건 | 환자 {n_pat}명 | ISQ 채움 {n_isq} | HbA1c(술전) 채움 {n_hb}")
     print("※ 당뇨·투약·결과(골흡수/합병증/fail) 열은 다른 소스라 빈칸입니다.")
 
 
