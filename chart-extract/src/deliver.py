@@ -177,6 +177,7 @@ def build(raw, hba1c_path, template, out):
     out_by_pt = {}           # (환자,치아) → {열이름: 값} (기존 수기 결과)
     pat_serial = {}          # 환자 → 원본 명단의 Serial No.
     pat_order = {}           # 환자 → 원본 명단 등장 순서(순번 없을 때 백업)
+    manual_impl = {}         # (환자,치아) → {열이름: 값} 원본에 수기 입력된 임플란트 행 통째로
     if template:
         trows = list(load_workbook(template, data_only=True).active.iter_rows(values_only=True))
         thdr = [str(x).strip() if x is not None else "" for x in trows[0]]
@@ -206,6 +207,11 @@ def build(raw, hba1c_path, template, out):
                     j = ti.get(name)
                     if j is not None and j < len(row) and row[j] not in (None, ""):
                         out_by_pt.setdefault((p, tnum), {})[name] = row[j]
+                # 수기 입력된 임플란트 행 통째로 저장(노트에서 못 뽑을 때 대체용)
+                manual_impl.setdefault((p, tnum), {
+                    thdr[j]: row[j] for j in range(min(len(row), len(thdr)))
+                    if thdr[j] and row[j] not in (None, "")
+                })
     else:
         HDR = list(DEFAULT_HEADERS)
 
@@ -219,81 +225,91 @@ def build(raw, hba1c_path, template, out):
     if cohort is not None:
         rows = [r for r in rows if str(r[1]) in cohort]
 
-    # 순번: 원본 명단(연구시트)의 Serial No. 순서를 그대로 따른다.
-    #   명단에 순번이 없으면 명단 등장 순서, 그것도 없으면 환자번호 순.
-    _base = (max(pat_serial.values()) + 1) if pat_serial else 0
-    def _pat_key(p):
-        if p in pat_serial:
-            return (0, pat_serial[p])
-        if p in pat_order:
-            return (1, pat_order[p])
-        return (2, p)
-    rows.sort(key=lambda r: (_pat_key(str(r[1])), int(r[17].lstrip("#") or 0), r[5] or ""))
-
     def L(name):
         i = col(name)
         return get_column_letter(i + 1) if i is not None else None
 
-    wb = Workbook(); ws = wb.active
-    ws.append(HDR + HELP_HEADERS)
-    prev_pat = None
-    cur_serial = None
-    fallback = _base
-    n_pat = 0
-    n_isq = n_hb = 0
-    data_row = 1  # 헤더가 1행
-    row_serials = []
+    # ── 출력 엔트리 통합: (1) 노트에서 추출한 것 + (2) 노트엔 없지만 원본에 수기입력된 것 ──
+    entries = []           # {pat, tnum, tooth_str, sdate, vals, source}
+    auto_keys = set()
+    n_isq = 0
     for r in rows:
-        pat = str(r[1]); tooth = r[17]; tnum = tooth.lstrip("#"); sdate = r[5]
+        pat = str(r[1]); tnum = r[17].lstrip("#"); sdate = r[5]
+        auto_keys.add((pat, tnum))
         age, birth, sex = demo.get(pat, ("", "", ""))
         pre, post = join_hba1c(hb, pat, sdate)
+        vals = {
+            "환자번호": pat, "성별": sex, "생년월일": birth,
+            "임플란트 식립 부위(상악/하악)": f"#{tnum}i", "임플란트 식립 시기": sdate,
+            "임플란트 회사": r[6], "임플란트 직경": r[7], "임플란트길이": r[8],
+            "골이식 여부": r[9], "ISQ 측정량(협)": r[14], "ISQ 측정량(설)": r[15],
+        }
+        if pre:
+            vals["당화혈색소(수술전)"] = pre[1] if pre[1] is not None else pre[2]
+            vals["당화혈색소 측정시기(수술전)"] = pre[0]
+        if post:
+            vals["당화혈색소(수술후)"] = post[1] if post[1] is not None else post[2]
+            vals["당화혈색소 측정시기(수술후)"] = post[0]
+        vals.update(dm_by_pat.get(pat, {}))
+        vals.update(out_by_pt.get((pat, tnum), {}))
+        if r[14] != "":
+            n_isq += 1
+        entries.append({"pat": pat, "tnum": tnum, "sdate": sdate, "source": "노트",
+                        "help": [r[17], r[18], r[19]], "vals": vals})
+
+    # 노트에서 못 뽑았지만 원본에 수기입력된 임플란트 → 그 값 그대로 사용
+    n_manual = 0
+    for (pat, tnum), mrow in manual_impl.items():
+        if (pat, tnum) in auto_keys:
+            continue
+        n_manual += 1
+        sdate = mrow.get("임플란트 식립 시기", "")
+        entries.append({"pat": pat, "tnum": tnum,
+                        "sdate": str(sdate)[:10] if sdate else "",
+                        "source": "수기", "help": [f"#{tnum}", "수기입력", ""],
+                        "vals": dict(mrow)})
+
+    # 순번: 원본 명단의 Serial No. 순서. 없으면 등장순서, 그것도 없으면 환자번호.
+    _base = (max(pat_serial.values()) + 1) if pat_serial else 0
+    def _pat_key(p):
+        if p in pat_serial: return (0, pat_serial[p])
+        if p in pat_order:  return (1, pat_order[p])
+        return (2, p)
+    entries.sort(key=lambda e: (_pat_key(e["pat"]),
+                                int(e["tnum"] or 0), e["sdate"] or ""))
+
+    # ── 쓰기 ──
+    Lb, Ldx, Lpl = L("생년월일"), L("DM증 진단 시기"), L("임플란트 식립 시기")
+    Lage = L("DM증진단시 나이(세)")
+    Lpre, Lpost = L("당화혈색소(수술전)"), L("당화혈색소(수술후)")
+    Lbu, Lli = L("ISQ 측정량(협)"), L("ISQ 측정량(설)")
+
+    wb = Workbook(); ws = wb.active
+    ws.append(HDR + HELP_HEADERS)
+    prev_pat = None; cur_serial = None; fallback = _base
+    n_pat = 0; data_row = 1
+    row_serials = []
+    for e in entries:
+        pat = e["pat"]
         line = [None] * len(HDR)
-        data_row += 1
-        rr = data_row
+        data_row += 1; rr = data_row
 
         def put(name, val):
             i = col(name)
             if i is not None:
                 line[i] = val
 
-        # Serial No. — 원본 명단의 순번을 그대로, 같은 환자면 같은 번호
         if pat != prev_pat:
-            prev_pat = pat
-            n_pat += 1
+            prev_pat = pat; n_pat += 1
             cur_serial = pat_serial.get(pat)
             if cur_serial is None:
-                cur_serial = fallback
-                fallback += 1
-        put("Serial No.", cur_serial)
-        put("환자번호", pat)
-        put("성별", sex)
-        put("생년월일", _as_date(birth))
-        put("임플란트 식립 부위(상악/하악)", f"{tooth}i")
-        put("임플란트 식립 시기", _as_date(sdate))
-        put("임플란트 회사", r[6])
-        put("임플란트 직경", r[7])
-        put("임플란트길이", r[8])
-        put("골이식 여부", r[9])
-        if pre:
-            put("당화혈색소(수술전)", pre[1] if pre[1] is not None else pre[2])
-            put("당화혈색소 측정시기(수술전)", _as_date(pre[0])); n_hb += 1
-        if post:
-            put("당화혈색소(수술후)", post[1] if post[1] is not None else post[2])
-            put("당화혈색소 측정시기(수술후)", _as_date(post[0]))
-        put("ISQ 측정량(협)", r[14]); put("ISQ 측정량(설)", r[15])
-        if r[14] != "":
-            n_isq += 1
-        # 기존 수기 당뇨/투약(환자단위) + 결과(치아단위) 보존
-        for name, val in dm_by_pat.get(pat, {}).items():
-            put(name, val)
-        for name, val in out_by_pt.get((pat, tnum), {}).items():
-            put(name, val)
+                cur_serial = fallback; fallback += 1
 
-        # ── 원본 시트의 수식 복구 (참조 셀은 위에서 날짜/숫자로 기록됨) ──
-        Lb, Ldx, Lpl = L("생년월일"), L("DM증 진단 시기"), L("임플란트 식립 시기")
-        Lage = L("DM증진단시 나이(세)")
-        Lpre, Lpost = L("당화혈색소(수술전)"), L("당화혈색소(수술후)")
-        Lbu, Lli = L("ISQ 측정량(협)"), L("ISQ 측정량(설)")
+        for name, val in e["vals"].items():
+            put(name, _as_date(val) if name in DATE_COLS else val)
+        put("Serial No.", cur_serial)
+
+        # 수식 복구
         if Lb:
             put("나이", f'=IFERROR(DATEDIF({Lb}{rr},TODAY(),"Y"),"")')
         if Lb and Ldx:
@@ -308,15 +324,17 @@ def build(raw, hba1c_path, template, out):
         if Lbu and Lli:
             put("ISQ 측정평균", f'=IFERROR(({Lbu}{rr}+{Lli}{rr})/2,"")')
 
-        line += [tooth, r[18], r[19]]
+        line += e["help"]
         ws.append(line)
-        row_serials.append(n_pat)   # 띠 색은 환자 등장 순서로 교대(순번 간격 무관)
+        row_serials.append(n_pat)
 
     _style(ws, HDR, HELP_HEADERS, col, row_serials)
     wb.save(out)
+    n_hb = sum(1 for e in entries if e["vals"].get("당화혈색소(수술전)") not in (None, ""))
     print(f"저장 → {out}")
-    print(f"임플란트 {len(rows)}건 | 환자 {n_pat}명 | ISQ 채움 {n_isq} | HbA1c(술전) 채움 {n_hb}")
-    print("※ 당뇨·투약·결과(골흡수/합병증/fail) 열은 다른 소스라 빈칸입니다.")
+    print(f"임플란트 {len(entries)}건(노트 {len(rows)}+수기보완 {n_manual}) | "
+          f"환자 {n_pat}명 | ISQ {n_isq} | HbA1c(술전) {n_hb}")
+    print("※ 당뇨·투약·결과(골흡수/합병증/fail) 열은 다른 소스라 대체로 빈칸입니다.")
 
 
 def main():
