@@ -47,12 +47,14 @@ def _brand_for_tooth(notes, tooth):
 
 
 def _pick_isq(readings, install_date):
-    """식립일 이후 가장 이른 측정을 우선 선택. 없으면 가장 이른 것."""
+    """식립 '다음 차트'(보철 인상일)의 ISQ = 식립일보다 엄격히 이후, 가장 이른 측정.
+    식립일 이후 측정이 없으면 (드묾) 가장 이른 측정으로 대체."""
     if not readings:
         return None
     def key(r):
         return r["date"] or "9999-99-99"
-    after = [r for r in readings if (r["date"] or "9999") >= (install_date or "0000")]
+    after = [r for r in readings
+             if r["date"] and install_date and r["date"] > install_date]
     pool = sorted(after or readings, key=key)
     return pool[0]
 

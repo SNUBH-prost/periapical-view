@@ -33,6 +33,23 @@ DEFAULT_HEADERS = [
 HELP_HEADERS = ["치식", "ISQ원본", "ISQ측정일"]
 
 
+# 다른 소스라 노트에서 안 뽑는 열 → 기존 수기 입력이 있으면 보존한다.
+DM_COLS = [   # 환자 단위
+    "DM증 진단 시기", "DM type", "DM증진단시 나이(세)", "투약방법", "투약 약제",
+    "약제 성분명", "투약시작 나이", "투약시작시 나이", "임플란트수술전 투약기간(년)",
+]
+OUTCOME_COLS = [   # 임플란트(치아) 단위
+    "osseointagration 성공(1)", "보철 전 골흡수", "보철 후 골흡수", "보철 합병증",
+    "치과용 임플란트의 fail여부", "fail시 경과기간", "PA",
+]
+
+
+def _tooth_num(v):
+    import re
+    m = re.search(r"\d{1,2}", str(v or ""))
+    return m.group() if m else ""
+
+
 def load_hba1c(path):
     """{환자번호: [(날짜, 값float or None, 값원본), ...] 정렬됨}"""
     if not path:
@@ -71,9 +88,30 @@ def build(raw, hba1c_path, template, out):
 
     hb = load_hba1c(hba1c_path)
 
+    cohort = None            # 연구 대상 환자 집합
+    dm_by_pat = {}           # 환자 → {열이름: 값} (기존 수기 당뇨/투약)
+    out_by_pt = {}           # (환자,치아) → {열이름: 값} (기존 수기 결과)
     if template:
-        HDR = [c.value for c in load_workbook(template, data_only=True).active[1]]
-        HDR = [h for h in HDR if h is not None]
+        trows = list(load_workbook(template, data_only=True).active.iter_rows(values_only=True))
+        thdr = [str(x).strip() if x is not None else "" for x in trows[0]]
+        HDR = [h for h in trows[0] if h is not None]
+        ti = {name: i for i, name in enumerate(thdr)}
+        pat_i = ti.get("환자번호"); site_i = ti.get("임플란트 식립 부위(상악/하악)")
+        cohort = set()
+        for row in trows[1:]:
+            if pat_i is None or pat_i >= len(row) or row[pat_i] in (None, ""):
+                continue
+            p = str(row[pat_i]); cohort.add(p)
+            for name in DM_COLS:
+                j = ti.get(name)
+                if j is not None and j < len(row) and row[j] not in (None, ""):
+                    dm_by_pat.setdefault(p, {}).setdefault(name, row[j])
+            tnum = _tooth_num(row[site_i]) if site_i is not None and site_i < len(row) else ""
+            if tnum:
+                for name in OUTCOME_COLS:
+                    j = ti.get(name)
+                    if j is not None and j < len(row) and row[j] not in (None, ""):
+                        out_by_pt.setdefault((p, tnum), {})[name] = row[j]
     else:
         HDR = list(DEFAULT_HEADERS)
 
@@ -83,12 +121,17 @@ def build(raw, hba1c_path, template, out):
                 return i
         return None
 
+    # 코호트만 남기고, 환자→치아→식립일 순 정렬
+    if cohort is not None:
+        rows = [r for r in rows if str(r[1]) in cohort]
+    rows.sort(key=lambda r: (str(r[1]), int(r[17].lstrip("#") or 0), r[5] or ""))
+
     wb = Workbook(); ws = wb.active
     ws.append(HDR + HELP_HEADERS)
     serial = 0
     n_isq = n_hb = 0
     for r in rows:
-        pat = str(r[1]); tooth = r[17]; sdate = r[5]
+        pat = str(r[1]); tooth = r[17]; tnum = tooth.lstrip("#"); sdate = r[5]
         age, birth, sex = demo.get(pat, ("", "", ""))
         pre, post = join_hba1c(hb, pat, sdate)
         line = [None] * len(HDR)
@@ -120,6 +163,11 @@ def build(raw, hba1c_path, template, out):
         put("ISQ 측정량(협)", r[14]); put("ISQ 측정량(설)", r[15]); put("ISQ 측정평균", r[16])
         if r[14] != "":
             n_isq += 1
+        # 기존 수기 당뇨/투약(환자단위) + 결과(치아단위) 보존
+        for name, val in dm_by_pat.get(pat, {}).items():
+            put(name, val)
+        for name, val in out_by_pt.get((pat, tnum), {}).items():
+            put(name, val)
         line += [tooth, r[18], r[19]]
         ws.append(line)
 

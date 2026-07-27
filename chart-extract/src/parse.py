@@ -11,7 +11,7 @@ import statistics
 
 # ── 회사/제품 사전 (키워드 → 출력명). 실제 회사명으로 자유롭게 수정/추가 ──
 BRANDS = {
-    "superline": "Dentium Superline",
+    "superline": "Dentium Superline", "supeline": "Dentium Superline",
     "luna": "Dentium Luna",
     "implantium": "Dentium Implantium",
     "tsiii": "Osstem TS", "ts iii": "Osstem TS", "ts3": "Osstem TS", "ts": "Osstem TS",
