@@ -1,55 +1,81 @@
-"""엑셀 읽기/쓰기 — 원본 서식을 유지한 채 지정한 열만 채워 넣는다."""
+"""엑셀 입출력.
+
+입력  : 외래경과 노트가 한 줄에 하나씩 들어있는 엑셀 (환자 한 명이 여러 줄)
+출력  : 임플란트 한 개당 한 줄인 새 엑셀
+"""
 from __future__ import annotations
 
-import shutil
-from pathlib import Path
-
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 
 def _norm(s) -> str:
-    """열 제목 비교용: 앞뒤 공백/중복 공백을 무시한다 (엑셀 제목의 오타성 공백 대응)."""
-    if s is None:
-        return ""
-    return " ".join(str(s).split()).strip()
+    return " ".join(str(s).split()).strip() if s is not None else ""
 
 
-def read_header(path: str):
-    """첫 번째 시트의 헤더(제목행)를 읽어 {정규화이름: 열번호(1-base)} 를 돌려준다."""
+def _find_col(header_norm, candidates):
+    """정규화된 헤더 목록에서 후보 키워드를 포함하는 첫 열의 인덱스(0-base)."""
+    for i, h in enumerate(header_norm):
+        for c in candidates:
+            if c in h:
+                return i
+    return None
+
+
+def read_notes(path: str):
+    """
+    엑셀을 읽어 노트 레코드 목록을 돌려준다.
+    각 레코드: {patient, age, birth, sex, text, row}
+    열은 제목으로 자동 인식하고, 노트 본문 열은 '가장 긴 텍스트 열'로 자동 판별한다.
+    """
     wb = load_workbook(path, read_only=True, data_only=True)
     ws = wb.active
-    header = {}
-    for col_idx, cell in enumerate(next(ws.iter_rows(min_row=1, max_row=1)), start=1):
-        name = _norm(cell.value)
-        if name:
-            header[name] = col_idx
+    rows = list(ws.iter_rows(values_only=True))
     wb.close()
-    return header
+    if not rows:
+        return []
+
+    header = [_norm(x) for x in rows[0]]
+    idx_pat = _find_col(header, ["환자번호", "등록번호", "chart"])
+    idx_age = _find_col(header, ["나이", "age", "연령"])
+    idx_birth = _find_col(header, ["생년월일", "birth", "생일"])
+    idx_sex = _find_col(header, ["성별", "sex", "성"])
+
+    # 본문(노트) 열: 데이터 행에서 평균 글자수가 가장 긴 열
+    data = rows[1:]
+    ncol = len(header)
+    best_col, best_len = None, -1
+    for c in range(ncol):
+        total = 0
+        for r in data[:200]:
+            v = r[c] if c < len(r) else None
+            total += len(str(v)) if v is not None else 0
+        if total > best_len:
+            best_len, best_col = total, c
+    idx_text = best_col
+
+    records = []
+    for ri, r in enumerate(data, start=2):
+        def cell(i):
+            return r[i] if (i is not None and i < len(r)) else None
+        text = cell(idx_text)
+        records.append({
+            "patient": _norm(cell(idx_pat)),
+            "age": cell(idx_age),
+            "birth": cell(idx_birth),
+            "sex": _norm(cell(idx_sex)),
+            "text": "" if text is None else str(text),
+            "row": ri,
+        })
+    return records, {"text_col": header[idx_text] if idx_text is not None else "?"}
 
 
-def iter_rows_text(path: str, text_col_idx: int, key_col_idx: int | None):
-    """(행번호, 차트텍스트, 키값) 을 데이터 행마다 순서대로 내보낸다."""
-    wb = load_workbook(path, read_only=True, data_only=True)
+def write_table(path: str, headers, rows):
+    """headers = [열이름...], rows = [[값...], ...] 를 새 엑셀로 저장."""
+    wb = Workbook()
     ws = wb.active
-    for row_idx, row in enumerate(ws.iter_rows(min_row=2), start=2):
-        text = row[text_col_idx - 1].value if len(row) >= text_col_idx else None
-        key = None
-        if key_col_idx and len(row) >= key_col_idx:
-            key = row[key_col_idx - 1].value
-        yield row_idx, ("" if text is None else str(text)), key
+    ws.append(headers)
+    for row in rows:
+        ws.append(row)
+    wb.save(path)
     wb.close()
-
-
-def write_values(src_path: str, dst_path: str, updates: dict, make_backup: bool = True):
-    """updates = {(행번호, 열번호): 값} 을 엑셀에 써 넣고 dst_path 로 저장한다."""
-    if make_backup and Path(src_path).resolve() == Path(dst_path).resolve():
-        backup = str(Path(src_path).with_suffix("")) + "_백업" + Path(src_path).suffix
-        shutil.copy2(src_path, backup)
-
-    wb = load_workbook(src_path)          # 서식 유지를 위해 read_only 아님
-    ws = wb.active
-    for (r, c), value in updates.items():
-        ws.cell(row=r, column=c, value=value)
-    wb.save(dst_path)
-    wb.close()
-    return dst_path
+    return path
