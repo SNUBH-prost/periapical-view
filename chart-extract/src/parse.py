@@ -16,13 +16,13 @@ import statistics
 # ── 회사/제품 사전 ──────────────────────────────────────────
 #   왼쪽 키워드가 보이면 오른쪽 이름으로 출력. 실제 회사명으로 자유롭게 바꾸세요.
 BRANDS = {
-    "superline": "Superline",
-    "luna": "Luna",
-    "implantium": "Implantium",
-    "anyridge": "AnyRidge",
-    "anyone": "AnyOne",
-    "tsiii": "TSIII",
-    "ts iii": "TSIII",
+    "superline": "Dentium Superline",
+    "luna": "Dentium Luna",
+    "implantium": "Dentium Implantium",
+    "tsiii": "Osstem TS", "ts iii": "Osstem TS", "ts3": "Osstem TS",
+    "anyridge": "Megagen AnyRidge",
+    "anyone": "Osstem AnyOne",
+    "cmi": "CMI IS",
     "blt": "Straumann BLT",
     "blx": "Straumann BLX",
     "sla": "Straumann SLA",
@@ -36,9 +36,6 @@ _SPEC = re.compile(
     r"#\s*(\d{1,2})\s*i?\b[^\n)]*?(\d(?:\.\d)?)\s*mm\s*[xX×*]\s*(\d{1,2}(?:\.\d)?)\s*mm",
     re.I,
 )
-# 괄호 안 직경만 있는 경우:  #24i(3.6)  /  #15i(4.0)
-_DIA_ONLY = re.compile(r"#\s*(\d{1,2})\s*i?\s*\(\s*(\d\.\d)\s*\)")
-
 _NOTE_DATE = re.compile(r"\(\s*(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})\s*\)")
 
 # 한 줄에서 치아별 값:  #24i:80/77   #34i: 89/90/89/90
@@ -80,23 +77,48 @@ def find_brand(text: str) -> str:
     return ""
 
 
-def is_installation_note(text: str) -> bool:
-    return bool(re.search(r"Implant\s*installation|임플란트\s*(installation|식립|installation)", text, re.I))
-
-
 def has_gbr(text: str) -> bool:
     return bool(_GBR_POS.search(text))
 
 
+# 골이식 재료 후보 키워드 (본문에 이 단어가 보이면 재료로 인정). 실제 쓰는 제품명 추가 가능.
+GRAFT_PRODUCTS = [
+    "자가골", "이종골", "동종골", "합성골", "탈회골", "자가치아골",
+    "AutoBT", "Allomix", "Bio-Oss", "Bio-Gide", "OCS-B", "The Graft",
+    "Osteon", "Regenoss", "collagen membrane", "collagen", "Ossix",
+    "Cytoplast", "티타늄메쉬", "Ti-mesh",
+]
+# "GBR with ( bone : XXX / membrane : YYY )" 형식에서 값 뽑기
+_GRAFT_FIELD = re.compile(r"bone\s*:\s*([^/)\n]*?)\s*(?:/|membrane)", re.I)
+_MEM_FIELD = re.compile(r"membrane\s*:\s*([^)\n]*)", re.I)
+
+
+def graft_material(text: str) -> str:
+    """수술 노트에서 사용된 골이식 재료를 문자열로. 못 찾으면 ''(공란)."""
+    parts = []
+    m = _GRAFT_FIELD.search(text)
+    if m and m.group(1).strip():
+        parts.append("bone: " + m.group(1).strip())
+    mm = _MEM_FIELD.search(text)
+    if mm and mm.group(1).strip():
+        parts.append("membrane: " + mm.group(1).strip())
+    low = text.lower()
+    for kw in GRAFT_PRODUCTS:
+        if kw.lower() in low and not any(kw.lower() in p.lower() for p in parts):
+            parts.append(kw)
+    return " / ".join(parts)
+
+
 def parse_specs(text: str):
-    """식립 노트에서 (치아번호, 직경, 길이) 목록. 규격이 안 잡히면 직경만이라도."""
+    """
+    노트에서 '직경 × 길이 상세 규격'이 적힌 임플란트만 뽑는다.
+      예)  (#15i superline : 4.0 mm X 10mm)  →  {15: {diameter:'4.0', length:'10'}}
+    직경만 있는 참조(#24i(3.6))는 1차 수술의 상세기록이 아니므로 제외한다.
+    """
     out = {}
     for m in _SPEC.finditer(text):
         tooth = int(m.group(1))
         out[tooth] = {"diameter": m.group(2), "length": m.group(3)}
-    for m in _DIA_ONLY.finditer(text):
-        tooth = int(m.group(1))
-        out.setdefault(tooth, {"diameter": m.group(2), "length": ""})
     return out
 
 

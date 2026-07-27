@@ -17,14 +17,14 @@ from . import excel_io
 from . import parse as P
 
 OUTPUT_HEADERS = [
-    "Serial No.", "환자번호", "나이", "생년월일", "성별",
+    "Serial No.", "환자번호", "나이", "성별",
     "임플란트 식립 부위(상악/하악)", "임플란트 식립 시기", "임플란트 회사",
     "임플란트 직경", "임플란트길이", "골이식 여부",
     "당화혈색소(수술전)", "당화혈색소 측정시기(수술전)",
-    "당화혈색소(수술후)", "당화혈색소 측정시기(수술후)", "당화혈색소 (술전- 술후)",
+    "당화혈색소(수술후)", "당화혈색소 측정시기(수술후)",
     "ISQ 측정량(협)", "ISQ 측정량(설)", "ISQ 측정평균",
-    # ── 확인용 보조 열 (프로그램이 판단 근거를 남김) ──
-    "치식(FDI)", "ISQ원본", "ISQ측정일", "식립노트일",
+    # ── 확인용 보조 열 (프로그램 판단 근거) ──
+    "치식", "ISQ원본", "ISQ측정일",
 ]
 
 
@@ -72,24 +72,25 @@ def process(records):
         birth = next((n["birth"] for n in notes if n["birth"] not in (None, "")), "")
         sex = next((n["sex"] for n in notes if n["sex"]), "")
 
-        # 1) 식립기록 수집
+        # 1) 1차 수술 상세규격(직경×길이)이 있는 임플란트 수집.
+        #    같은 치아가 여러 노트에 있으면 가장 이른 날(실제 1차 수술)을 채택.
         implants = {}          # tooth -> {date, dia, len, gbr}
         isq_all = []           # {tooth, vals, date, install_teeth}
         for n in notes:
             d = P.note_date(n["text"])
-            install_teeth = set()
-            if P.is_installation_note(n["text"]):
-                gbr = P.has_gbr(n["text"])
-                for tooth, spec in P.parse_specs(n["text"]).items():
-                    install_teeth.add(tooth)
-                    if tooth not in implants:
-                        implants[tooth] = {
-                            "date": d, "diameter": spec["diameter"],
-                            "length": spec["length"], "gbr": gbr,
-                        }
+            specs = P.parse_specs(n["text"])       # 상세규격 있는 것만
+            gbr = P.has_gbr(n["text"])
+            graft = P.graft_material(n["text"])
+            for tooth, spec in specs.items():
+                prev = implants.get(tooth)
+                if prev is None or (d and (not prev["date"] or d < prev["date"])):
+                    implants[tooth] = {
+                        "date": d, "diameter": spec["diameter"],
+                        "length": spec["length"], "gbr": gbr, "graft": graft,
+                    }
             for tooth, vals in P.find_isq(n["text"]):
                 isq_all.append({"tooth": tooth, "vals": vals, "date": d,
-                                "install_teeth": install_teeth})
+                                "install_teeth": set(specs)})
 
         # 2) 임플란트당 한 줄
         for tooth in sorted(implants):
@@ -107,17 +108,25 @@ def process(records):
                 isq_raw = "/".join(str(v) for v in chosen["vals"])
                 isq_date = chosen["date"]
 
+            # 골이식 여부: 실제 시트 규약대로 0 / 1 / 1(재료)
+            if not info["gbr"]:
+                gbr_str = "0"
+            elif info["graft"]:
+                gbr_str = f"1({info['graft']})"
+            else:
+                gbr_str = "1"
+
             serial += 1
             out_rows.append([
-                serial, pat, age, birth, sex,
-                (P.arch_from_tooth(tooth) + f" #{tooth}").strip(),  # 부위
-                info["date"],                                       # 식립 시기
-                _brand_for_tooth(notes, tooth),                     # 회사
+                serial, pat, age, sex,
+                f"#{tooth}i",                    # 부위 (시트 표기: #26i)
+                info["date"],                    # 식립 시기
+                _brand_for_tooth(notes, tooth),  # 회사 (예: Dentium Superline)
                 info["diameter"], info["length"],
-                "Y" if info["gbr"] else "N",
-                "", "", "", "", "",          # HbA1c 5칸 — 별도 검사결과로 나중에 연결
+                gbr_str,
+                "", "", "", "",                  # HbA1c 4칸 — 별도 검사결과로 연결
                 buccal, lingual, mean,
-                f"#{tooth}", isq_raw, isq_date, info["date"],       # 보조 열
+                f"#{tooth}", isq_raw, isq_date,   # 보조 열
             ])
     return out_rows
 
