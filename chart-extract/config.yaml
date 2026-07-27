@@ -1,0 +1,40 @@
+# ────────────────────────────────────────────────────────────────
+#  차트 추출기 설정 파일  (메모장으로 열어서 수정하면 됩니다)
+# ────────────────────────────────────────────────────────────────
+
+# 1) 입력 엑셀에서 "차트 내용(텍스트)"이 들어있는 열 이름.
+#    프로그램은 이 열의 글자를 읽어서 나머지 항목을 채웁니다.
+#    (엑셀 첫 줄에 적힌 열 제목과 똑같이 적어주세요)
+chart_text_column: "차트내용"
+
+# 2) 행을 구분하는 기준 열 (보통 환자번호). 로그에만 사용됩니다.
+key_column: "환자번호"
+
+# 3) 프로그램이 채울 항목(열)들.
+#    - name  : 엑셀에 적힌 열 제목과 똑같이
+#    - rule  : src/rules.py 안에 있는 추출 규칙 이름
+#    - overwrite: true 면 이미 값이 있어도 덮어씀 / false 면 빈 칸만 채움
+columns:
+  - { name: "나이",                          rule: "age",            overwrite: false }
+  - { name: "생년월일",                      rule: "birthdate",      overwrite: false }
+  - { name: "성별",                          rule: "sex",            overwrite: false }
+  - { name: "임플란트 식립 부위(상악/하악)", rule: "implant_site",   overwrite: false }
+  - { name: "임플란트 식립 시기",            rule: "implant_date",   overwrite: false }
+  - { name: "임플란트 회사",                 rule: "implant_company",overwrite: false }
+  - { name: "임플란트 직경",                 rule: "implant_diameter",overwrite: false }
+  - { name: "임플란트길이",                  rule: "implant_length", overwrite: false }
+  - { name: "골이식 여부",                   rule: "bone_graft",     overwrite: false }
+  - { name: "당화혈색소(수술전)",            rule: "hba1c_pre",      overwrite: false }
+  - { name: "당화혈색소 측정시기(수술전)",   rule: "hba1c_pre_date", overwrite: false }
+  - { name: "당화혈색소(수술후)",            rule: "hba1c_post",     overwrite: false }
+  - { name: "당화혈색소 측정시기(수술후)",   rule: "hba1c_post_date",overwrite: false }
+  - { name: "당화혈색소 (술전- 술후)",       rule: "hba1c_delta",    overwrite: false }
+  - { name: "ISQ 측정량(협)",                rule: "isq_buccal",     overwrite: false }
+  - { name: "ISQ 측정량(설)",                rule: "isq_lingual",    overwrite: false }
+  - { name: "ISQ 측정평균",                  rule: "isq_mean",       overwrite: false }
+
+# 4) 결과 저장 방식
+#    - in_place: true  → 원본 엑셀에 그대로 채워서 저장 (백업본을 먼저 자동 생성)
+#    - in_place: false → 원본은 그대로 두고 "_결과.xlsx" 새 파일로 저장
+in_place: false
+output_suffix: "_결과"
