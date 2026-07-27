@@ -73,28 +73,29 @@ def process(records):
         sex = next((n["sex"] for n in notes if n["sex"]), "")
 
         # 1) 1차 수술 상세규격(직경×길이)이 있는 임플란트 수집.
-        #    같은 치아가 여러 노트에 있으면 가장 이른 날(실제 1차 수술)을 채택.
-        implants = {}          # tooth -> {date, dia, len, gbr}
+        #    (치아, 식립일)로 구분 → 같은 치아 재식립(다른 날짜)은 별도 행.
+        implants = {}          # (tooth, date) -> {tooth, date, dia, len, brand, gbr, graft}
         isq_all = []           # {tooth, vals, date, install_teeth}
         for n in notes:
             d = P.note_date(n["text"])
             specs = P.parse_specs(n["text"])       # 상세규격 있는 것만
-            gbr = P.has_gbr(n["text"])
             graft = P.graft_material(n["text"])
             for tooth, spec in specs.items():
-                prev = implants.get(tooth)
-                if prev is None or (d and (not prev["date"] or d < prev["date"])):
-                    implants[tooth] = {
-                        "date": d, "diameter": spec["diameter"],
-                        "length": spec["length"], "gbr": gbr, "graft": graft,
+                key = (tooth, d)
+                if key not in implants:
+                    implants[key] = {
+                        "tooth": tooth, "date": d, "diameter": spec["diameter"],
+                        "length": spec["length"], "brand": spec["brand"],
+                        "gbr": bool(graft), "graft": graft,
                     }
             for tooth, vals in P.find_isq(n["text"]):
                 isq_all.append({"tooth": tooth, "vals": vals, "date": d,
                                 "install_teeth": set(specs)})
 
         # 2) 임플란트당 한 줄
-        for tooth in sorted(implants):
-            info = implants[tooth]
+        for key in sorted(implants, key=lambda k: (k[0], k[1] or "")):
+            info = implants[key]
+            tooth = info["tooth"]
             # 이 치아에 해당하는 ISQ 후보: 치아번호 일치 + (같은 식립노트의 번호없는 ISQ)
             cand = [r for r in isq_all if r["tooth"] == tooth]
             cand += [r for r in isq_all
@@ -116,12 +117,14 @@ def process(records):
             else:
                 gbr_str = "1"
 
+            company = info["brand"] or _brand_for_tooth(notes, tooth)
+
             serial += 1
             out_rows.append([
                 serial, pat, age, sex,
                 f"#{tooth}i",                    # 부위 (시트 표기: #26i)
                 info["date"],                    # 식립 시기
-                _brand_for_tooth(notes, tooth),  # 회사 (예: Dentium Superline)
+                company,                         # 회사 (예: Dentium Superline)
                 info["diameter"], info["length"],
                 gbr_str,
                 "", "", "", "",                  # HbA1c 4칸 — 별도 검사결과로 연결

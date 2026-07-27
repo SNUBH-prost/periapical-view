@@ -1,57 +1,46 @@
 """
-차트 노트 파싱 핵심 로직.
+차트 노트 파싱 핵심 로직 (v3 — 실제 SNUBH 노트의 다양한 형식 대응).
 
-한 환자의 외래경과 노트 여러 개를 읽어서:
-  - 식립기록(Implant installation)에서: 치아번호 / 규격(직경·길이) / 골이식 / 날짜
-  - 모든 노트에서: 회사(제품명), ISQ 측정값
-을 뽑아 치아번호로 묶는다.
-
-★ 실제 차트 표기가 예시와 다르면 아래 정규식/사전만 고치면 됩니다.
+임플란트 1차 수술 노트에서 치아별로 직경·길이·회사·골이식을, 모든 노트에서 ISQ를 뽑는다.
+표기 형식이 매우 다양해서 여러 패턴을 순서대로 시도한다.
 """
 from __future__ import annotations
 
 import re
 import statistics
 
-# ── 회사/제품 사전 ──────────────────────────────────────────
-#   왼쪽 키워드가 보이면 오른쪽 이름으로 출력. 실제 회사명으로 자유롭게 바꾸세요.
+# ── 회사/제품 사전 (키워드 → 출력명). 실제 회사명으로 자유롭게 수정/추가 ──
 BRANDS = {
     "superline": "Dentium Superline",
     "luna": "Dentium Luna",
     "implantium": "Dentium Implantium",
-    "tsiii": "Osstem TS", "ts iii": "Osstem TS", "ts3": "Osstem TS",
+    "tsiii": "Osstem TS", "ts iii": "Osstem TS", "ts3": "Osstem TS", "ts": "Osstem TS",
+    "us ": "Osstem US",
     "anyridge": "Megagen AnyRidge",
     "anyone": "Osstem AnyOne",
     "cmi": "CMI IS",
-    "blt": "Straumann BLT",
-    "blx": "Straumann BLX",
-    "sla": "Straumann SLA",
+    "evertis": "Evertis",
+    "blt": "Straumann BLT", "blx": "Straumann BLX", "sla": "Straumann SLA",
 }
+# '상표:' 뒤 토큰을 회사로 잡을 때, 회사가 아닌 단어(오탐 방지)
+_NOT_BRAND = {"the", "bone", "graft", "with", "and"}
 
-# 골이식으로 인정할 표현. (주의: "graft 확인" 같은 정형문구는 제외)
-_GBR_POS = re.compile(r"with\s*GBR|GBR\s*with|골\s*이식|자가골|bone\s*graft\s*함|이식재", re.I)
+# 골이식 재료 후보 (본문에 보이면 재료로 인정)
+GRAFT_PRODUCTS = [
+    "자가골", "이종골", "동종골", "합성골", "탈회골", "자가치아골",
+    "AutoBT", "Allomix", "Bio-Oss", "Bio-Gide", "OCS-B", "The graft", "The Graft",
+    "Osteon", "Regenoss", "Ossix", "Cytoplast", "ICB", "lego graft", "legograft",
+    "oss guide", "ossguide", "collagen", "티타늄메쉬", "Ti-mesh", "Xeno", "Zionics",
+]
 
-# 식립 스펙:  #15i superline : 4.0 mm X 10mm  /  #35i: 4.0mm X 8.5mm  /  #24 superline : 3.6 mm X 10 mm
-_SPEC = re.compile(
-    r"#\s*(\d{1,2})\s*i?\b[^\n)]*?(\d(?:\.\d)?)\s*mm\s*[xX×*]\s*(\d{1,2}(?:\.\d)?)\s*mm",
-    re.I,
-)
 _NOTE_DATE = re.compile(r"\(\s*(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})\s*\)")
+_TOOTH = re.compile(r"#\s*0*(\d{1,2})")
 
-# 한 줄에서 치아별 값:  #24i:80/77   #34i: 89/90/89/90
-_TOOTH_VALS = re.compile(r"#\s*(\d{1,2})\s*i?\s*:\s*([0-9]{1,3}(?:\s*/\s*[0-9]{1,3}){1,3})")
-# 치아번호 없는 ISQ:  ISQ: 80/80
-_BARE_VALS = re.compile(r"ISQ\s*:?\s*([0-9]{2,3}\s*/\s*[0-9]{2,3})", re.I)
-
-# ISQ 블록을 끊는 다른 섹션 머리말 (이게 나오면 ISQ 구간 종료)
-_SECTION_BREAK = re.compile(
-    r"thickness|gingival|tissue|두께|shade|mob|fixture|bite|per\s*\(|동의|발거|installation|Tx\s*>|처방",
-    re.I,
-)
+# 규격에서 잘라낼 뒷부분(여기부터는 임플란트 규격이 아님: healing/cover 크기, ISQ 등)
+_SEG_CUT = re.compile(r"ISQ|healing|cover|hand|연결|drilling|abutment|/", re.I)
 
 
 def note_date(text: str) -> str:
-    """노트 헤더의 ( YYYY-MM-DD ) 를 표준형 문자열로. 없으면 ''."""
     m = _NOTE_DATE.search(text)
     if not m:
         return ""
@@ -60,126 +49,167 @@ def note_date(text: str) -> str:
 
 
 def arch_from_tooth(tooth: int) -> str:
-    """FDI 치식 앞자리로 상악/하악 판별."""
     d = tooth // 10
-    if d in (1, 2):
-        return "상악"
-    if d in (3, 4):
-        return "하악"
-    return ""
+    return "상악" if d in (1, 2) else "하악" if d in (3, 4) else ""
 
 
-def find_brand(text: str) -> str:
-    low = text.lower()
+def _extract_dims(seg: str):
+    """규격 문자열에서 (직경, 길이). 여러 형식 순서대로 시도. 못 찾으면 ('','')."""
+    seg = seg.replace("×", "x").replace("X", "x")
+    # 1) 5.0D/10L
+    m = re.search(r"(\d(?:\.\d)?)\s*D\s*/\s*(\d{1,2}(?:\.\d)?)\s*L", seg, re.I)
+    if m:
+        return m.group(1), m.group(2)
+    # 2) A [mm] (x|*) B mm   예: 4.0mm X 8mm / 4.5*8.5mm / 4mm X  8.5mm
+    m = re.search(r"(\d(?:\.\d)?)\s*(?:mm)?\s*[x*]\s*(\d{1,2}(?:\.\d)?)\s*mm", seg, re.I)
+    if m:
+        return m.group(1), m.group(2)
+    # 3) A : B mm   예: 4.5 : 10 mm (X mm 비어있는 형식)
+    m = re.search(r"(\d(?:\.\d)?)\s*:\s*(\d{1,2}(?:\.\d)?)\s*mm", seg)
+    if m:
+        return m.group(1), m.group(2)
+    return "", ""
+
+
+def _brand_in(seg: str) -> str:
+    low = seg.lower()
+    # '상표:' 뒤 토큰 우선
+    m = re.search(r"상표[^:]*:\s*([A-Za-z][A-Za-z0-9]+)", seg)
+    if m and m.group(1).lower() not in _NOT_BRAND:
+        tok = m.group(1)
+        return BRANDS.get(tok.lower(), tok)
     for key, name in BRANDS.items():
-        if key in low:
+        if key.strip() and key in low:
             return name
     return ""
 
 
-def has_gbr(text: str) -> bool:
-    return bool(_GBR_POS.search(text))
+def parse_specs(text: str):
+    """
+    노트에서 상세규격(직경·길이)이 있는 임플란트 목록.
+    반환: {치아번호: {diameter, length, brand}}
+    치아번호 위치마다 뒤쪽 창(window)을 잘라 규격을 추출한다. 다치아 공유 규격도 처리.
+    """
+    text = text.replace("_x000D_", "")
+    out = {}
+    # 그룹형 다치아: "#45 47 ... (상표: ... 4mm X 8.5mm)" → 45,47 에 같은 규격
+    for m in _TOOTH.finditer(text):
+        tooth = int(m.group(1))
+        start = m.end()
+        window = text[start:start + 90]
+        cut = _SEG_CUT.search(window)
+        seg = window[:cut.start()] if cut else window
+        # 규격을 못 찾으면 창을 조금 더 넓혀 (뒤에 붙는 경우)
+        dia, length = _extract_dims(seg)
+        if not dia:
+            dia, length = _extract_dims(window)
+        if dia and length:
+            brand_seg = text[max(0, m.start() - 40):start + 60]
+            out.setdefault(tooth, {"diameter": dia, "length": length,
+                                   "brand": _brand_in(brand_seg)})
+    return out
 
 
-# 골이식 재료 후보 키워드 (본문에 이 단어가 보이면 재료로 인정). 실제 쓰는 제품명 추가 가능.
-GRAFT_PRODUCTS = [
-    "자가골", "이종골", "동종골", "합성골", "탈회골", "자가치아골",
-    "AutoBT", "Allomix", "Bio-Oss", "Bio-Gide", "OCS-B", "The Graft",
-    "Osteon", "Regenoss", "collagen membrane", "collagen", "Ossix",
-    "Cytoplast", "티타늄메쉬", "Ti-mesh",
-]
-# "GBR with ( bone : XXX / membrane : YYY )" 형식에서 값 뽑기
-_GRAFT_FIELD = re.compile(r"bone\s*:\s*([^/)\n]*?)\s*(?:/|membrane)", re.I)
-_MEM_FIELD = re.compile(r"membrane\s*:\s*([^)\n]*)", re.I)
+def find_brand(text: str) -> str:
+    return _brand_in(text.replace("_x000D_", ""))
 
 
 def graft_material(text: str) -> str:
-    """수술 노트에서 사용된 골이식 재료를 문자열로. 못 찾으면 ''(공란)."""
+    """수술 노트에서 사용된 골이식 재료. 못 찾으면 ''(=이식 안 함으로 간주)."""
+    text = text.replace("_x000D_", "")
     parts = []
-    m = _GRAFT_FIELD.search(text)
-    if m and m.group(1).strip():
-        parts.append("bone: " + m.group(1).strip())
-    mm = _MEM_FIELD.search(text)
-    if mm and mm.group(1).strip():
-        parts.append("membrane: " + mm.group(1).strip())
+    # "bone 상표명: XXX / membrane 상표명: YYY"
+    for label in ("bone", "membrane"):
+        m = re.search(label + r"[^:]{0,6}:\s*([^/)\n]+)", text, re.I)
+        if m:
+            v = m.group(1).strip(" .")
+            if v and not v.lower().startswith("membrane"):
+                parts.append(f"{label}: {v[:30]}")
     low = text.lower()
     for kw in GRAFT_PRODUCTS:
         if kw.lower() in low and not any(kw.lower() in p.lower() for p in parts):
             parts.append(kw)
-    return " / ".join(parts)
+    # 중복/정형문구 정리
+    return " / ".join(dict.fromkeys(parts))
 
 
-def parse_specs(text: str):
-    """
-    노트에서 '직경 × 길이 상세 규격'이 적힌 임플란트만 뽑는다.
-      예)  (#15i superline : 4.0 mm X 10mm)  →  {15: {diameter:'4.0', length:'10'}}
-    직경만 있는 참조(#24i(3.6))는 1차 수술의 상세기록이 아니므로 제외한다.
-    """
-    out = {}
-    for m in _SPEC.finditer(text):
-        tooth = int(m.group(1))
-        out[tooth] = {"diameter": m.group(2), "length": m.group(3)}
-    return out
+def has_gbr(text: str) -> bool:
+    """실제 골이식 재료가 확인될 때만 True (정형문구 'Implant with GBR'만으론 False)."""
+    return bool(graft_material(text))
+
+
+# ── ISQ ─────────────────────────────────────────────────────
+_BARE_VALS = re.compile(r"ISQ\s*:?\s*([0-9]{2,3}\s*/\s*[0-9]{2,3}(?:\s*/\s*[0-9]{2,3})*)", re.I)
+_TOOTH_VALS = re.compile(r"#\s*0*(\d{1,2})\s*i?\s*:\s*([0-9]{1,3}(?:\s*/\s*[0-9]{1,3}){1,3})")
+_SECTION_BREAK = re.compile(
+    r"thickness|gingival|tissue|두께|shade|mob|fixture level|bite|per\s*\(|동의|발거|처방",
+    re.I,
+)
 
 
 def _clean_vals(raw: str):
-    """'80/77' → [80,77]. ISQ 범위(30~99)를 벗어나면 (조직두께 등) 버린다."""
     vals = [int(x) for x in re.findall(r"\d{1,3}", raw)]
     if not (2 <= len(vals) <= 4):
         return None
-    if any(v < 30 or v > 99 for v in vals):   # 조직두께(4/4/5/4) 같은 값 걸러냄
+    if any(v < 30 or v > 99 for v in vals):   # 조직두께(4/4/5/4) 등 제외
         return None
     return vals
 
 
 def find_isq(text: str):
     """
-    노트에서 ISQ 측정값을 뽑는다.
-    반환: [(치아번호 or None, [값들]), ...]
-    'ISQ' 라벨 아래 구간에서만 읽어 조직두께와 혼동하지 않는다.
+    ISQ 측정값 추출. 반환: [(치아번호 or None, [값들]), ...]
+    - 한 줄에 치아+값이 같이 있으면 그 치아에 귀속
+    - 'ISQ:'만 있고 치아 없으면 (None, vals) → 같은 노트 임플란트에 귀속(main에서)
+    - 'ISQ' 라벨 아래 블록의 '#NNi: vals'도 수집 (조직두께 혼동 방지: 30~99 범위)
     """
+    text = text.replace("_x000D_", "")
     results = []
     in_isq = False
     for line in text.splitlines():
-        stripped = line.strip()
-        has_isq_word = re.search(r"\bISQ\b", stripped, re.I)
+        s = line.strip()
+        toothvals = list(_TOOTH_VALS.finditer(s))
+        has_isq = re.search(r"\bISQ\b", s, re.I)
 
-        if has_isq_word:
-            in_isq = True
-            # 같은 줄에 치아번호 없는 값(ISQ: 80/80)이 있으면 잡는다
-            bm = _BARE_VALS.search(stripped)
-            if bm:
-                v = _clean_vals(bm.group(1))
-                if v:
-                    results.append((None, v))
-            # 같은 줄에 치아별 값이 있으면 잡는다 (ISQ #24i:80/77)
-            for tm in _TOOTH_VALS.finditer(stripped):
+        if toothvals and (has_isq or in_isq):
+            # 같은 줄 치아별 값
+            for tm in toothvals:
                 v = _clean_vals(tm.group(2))
                 if v:
                     results.append((int(tm.group(1)), v))
+            if has_isq:
+                in_isq = True
             continue
 
-        if not stripped:                       # 빈 줄 → ISQ 구간 종료
-            in_isq = False
+        if has_isq:
+            in_isq = True
+            # 같은 줄에 치아 있고 ISQ 값(bare)도 있으면 그 치아에 귀속
+            line_tooth = _TOOTH.search(s)
+            bm = _BARE_VALS.search(s)
+            if bm:
+                v = _clean_vals(bm.group(1))
+                if v:
+                    results.append((int(line_tooth.group(1)) if line_tooth else None, v))
             continue
-        if _SECTION_BREAK.search(stripped):     # 다른 섹션 시작 → 종료
+
+        if not s or _SECTION_BREAK.search(s):
             in_isq = False
             continue
 
         if in_isq:
             matched = False
-            for tm in _TOOTH_VALS.finditer(stripped):
+            for tm in toothvals:
                 v = _clean_vals(tm.group(2))
                 if v:
                     results.append((int(tm.group(1)), v))
                     matched = True
-            if not matched:                     # ISQ 구간인데 값 형식이 아니면 종료
+            if not matched:
                 in_isq = False
     return results
 
 
 def isq_fields(vals):
-    """[협,설,...] → (협, 설, 평균).  앞=협, 뒤=설. 평균은 잡힌 값 전체 평균."""
+    """[협,설,...] → (협, 설, 평균). 앞=협, 뒤=설. 평균은 잡힌 값 전체 평균."""
     buccal = vals[0] if len(vals) >= 1 else ""
     lingual = vals[1] if len(vals) >= 2 else ""
     mean = round(statistics.mean(vals), 1) if vals else ""
