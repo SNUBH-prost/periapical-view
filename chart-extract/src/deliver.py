@@ -19,6 +19,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from . import excel_io
@@ -90,6 +91,76 @@ def join_hba1c(hb, patient, surgery_date):
     return (pre[-1] if pre else None), (post[0] if post else None)
 
 
+DATE_COLS = ["생년월일", "임플란트 식립 시기", "DM증 진단 시기",
+             "당화혈색소 측정시기(수술전)", "당화혈색소 측정시기(수술후)"]
+# 노트에서 뽑은 핵심 열(살짝 강조)
+KEY_COLS = ["임플란트 식립 부위(상악/하악)", "임플란트 식립 시기", "임플란트 회사",
+            "임플란트 직경", "임플란트길이", "골이식 여부",
+            "ISQ 측정량(협)", "ISQ 측정량(설)", "ISQ 측정평균"]
+WIDE_COLS = {"투약 약제": 34, "약제 성분명": 40, "골이식 여부": 22, "임플란트 회사": 18}
+
+
+def _style(ws, HDR, HELP, col, row_serials):
+    from openpyxl.utils import get_column_letter as gcl
+    ncol = len(HDR) + len(HELP)
+    last = ws.max_row
+    thin = Side(style="thin", color="D0D7DE")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    # 헤더
+    head_fill = PatternFill("solid", fgColor="2F5496")
+    help_fill = PatternFill("solid", fgColor="7F7F7F")
+    help_start = len(HDR)
+    for c in range(1, ncol + 1):
+        cell = ws.cell(row=1, column=c)
+        cell.font = Font(bold=True, color="FFFFFF", size=10)
+        cell.fill = help_fill if c > help_start else head_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        cell.border = border
+    ws.row_dimensions[1].height = 34
+
+    # 열 너비
+    for c in range(1, ncol + 1):
+        name = str(ws.cell(row=1, column=c).value or "").strip()
+        w = WIDE_COLS.get(name, min(max(len(name) + 2, 9), 16))
+        ws.column_dimensions[gcl(c)].width = w
+
+    # 날짜 형식 + 핵심열 인덱스
+    date_idx = {col(n) for n in DATE_COLS if col(n) is not None}
+    key_idx = {col(n) for n in KEY_COLS if col(n) is not None}
+
+    band_a = PatternFill("solid", fgColor="FFFFFF")
+    band_b = PatternFill("solid", fgColor="EAF1FB")   # 환자 구분 띠(연파랑)
+    key_a = PatternFill("solid", fgColor="FFF8E1")    # 핵심열 강조(연노랑)
+    key_b = PatternFill("solid", fgColor="FCEFC7")
+    help_band = PatternFill("solid", fgColor="F0F0F0")
+
+    for r in range(2, last + 1):
+        serial = row_serials[r - 2]
+        even = (serial % 2 == 0)
+        for c in range(1, ncol + 1):
+            cell = ws.cell(row=r, column=c)
+            cell.border = border
+            i = c - 1
+            if c > help_start:                       # 검증열
+                cell.fill = help_band
+                cell.font = Font(size=9, color="666666")
+            elif i in key_idx:                        # 핵심 추출열
+                cell.fill = key_b if even else key_a
+            else:
+                cell.fill = band_b if even else band_a
+            if i in date_idx:
+                cell.number_format = "yyyy-mm-dd"
+            # 정렬: 대부분 가운데, 약제/성분명만 왼쪽
+            name = str(HDR[i]).strip() if i < len(HDR) else ""
+            cell.alignment = Alignment(
+                horizontal="left" if name in ("투약 약제", "약제 성분명") else "center",
+                vertical="center")
+
+    ws.freeze_panes = "C2"      # Serial·환자번호 고정 + 헤더 고정
+    ws.auto_filter.ref = f"A1:{gcl(ncol)}{last}"
+
+
 def build(raw, hba1c_path, template, out):
     records, meta = excel_io.read_notes(raw)
     rows = process(records)
@@ -149,6 +220,7 @@ def build(raw, hba1c_path, template, out):
     prev_pat = None
     n_isq = n_hb = 0
     data_row = 1  # 헤더가 1행
+    row_serials = []
     for r in rows:
         pat = str(r[1]); tooth = r[17]; tnum = tooth.lstrip("#"); sdate = r[5]
         age, birth, sex = demo.get(pat, ("", "", ""))
@@ -212,7 +284,9 @@ def build(raw, hba1c_path, template, out):
 
         line += [tooth, r[18], r[19]]
         ws.append(line)
+        row_serials.append(serial)
 
+    _style(ws, HDR, HELP_HEADERS, col, row_serials)
     wb.save(out)
     print(f"저장 → {out}")
     print(f"임플란트 {len(rows)}건 | 환자 {serial}명 | ISQ 채움 {n_isq} | HbA1c(술전) 채움 {n_hb}")
