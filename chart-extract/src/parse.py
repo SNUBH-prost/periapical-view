@@ -12,10 +12,11 @@ import statistics
 # ── 회사/제품 사전 (키워드 → 출력명). 실제 회사명으로 자유롭게 수정/추가 ──
 BRANDS = {
     "superline": "Dentium Superline", "supeline": "Dentium Superline",
+    "sueprline": "Dentium Superline", "superlin": "Dentium Superline",
     "luna": "Dentium Luna",
     "implantium": "Dentium Implantium",
     "tsiii": "Osstem TS", "ts iii": "Osstem TS", "ts3": "Osstem TS", "ts": "Osstem TS",
-    "us ": "Osstem US",
+    "us": "Osstem US",
     "anyridge": "Megagen AnyRidge",
     "anyone": "Osstem AnyOne",
     "cmi": "CMI IS",
@@ -23,15 +24,23 @@ BRANDS = {
     "blt": "Straumann BLT", "blx": "Straumann BLX", "sla": "Straumann SLA",
 }
 # '상표:' 뒤 토큰을 회사로 잡을 때, 회사가 아닌 단어(오탐 방지)
-_NOT_BRAND = {"the", "bone", "graft", "with", "and"}
+_NOT_BRAND = {"the", "bone", "graft", "with", "and", "bio", "membrane"}
 
-# 골이식 재료 후보 (본문에 보이면 재료로 인정)
-GRAFT_PRODUCTS = [
-    "자가골", "이종골", "동종골", "합성골", "탈회골", "자가치아골",
-    "AutoBT", "Allomix", "Bio-Oss", "Bio-Gide", "OCS-B", "The graft", "The Graft",
-    "Osteon", "Regenoss", "Ossix", "Cytoplast", "ICB", "lego graft", "legograft",
-    "oss guide", "ossguide", "collagen", "티타늄메쉬", "Ti-mesh", "Xeno", "Zionics",
-]
+# 골이식 재료 후보 (소문자키 → 출력 표기). 본문에 키워드가 보이면 그 재료로 인정.
+_GRAFT_MAP = {
+    "자가골": "자가골", "이종골": "이종골", "동종골": "동종골", "합성골": "합성골",
+    "탈회골": "탈회골", "자가치아골": "자가치아골",
+    "autobt": "AutoBT", "allomix": "Allomix",
+    "bio-oss": "Bio-Oss", "bio oss": "Bio-Oss", "biooss": "Bio-Oss",
+    "bio-gide": "Bio-Gide", "ocs-b": "OCS-B", "ocs": "OCS",
+    "the graft": "The graft", "thegraft": "The graft",
+    "osteon": "Osteon", "regenoss": "Regenoss", "genoss": "Genoss",
+    "ossix": "Ossix", "cytoplast": "Cytoplast", "icb": "ICB",
+    "lego graft": "lego graft", "legograft": "lego graft",
+    "oss guide": "oss guide", "ossguide": "oss guide", "ossguide plus": "oss guide",
+    "collagen": "collagen", "ti-mesh": "Ti-mesh", "티타늄메쉬": "Ti-mesh",
+    "xeno": "Xeno", "zionics": "Zionics",
+}
 
 _NOTE_DATE = re.compile(r"\(\s*(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})\s*\)")
 _TOOTH = re.compile(r"#\s*0*(\d{1,2})")
@@ -73,15 +82,31 @@ def _extract_dims(seg: str):
 
 def _brand_in(seg: str) -> str:
     low = seg.lower()
-    # '상표:' 뒤 토큰 우선
+    # '상표:' 뒤 토큰 우선 (알려진 브랜드거나 4글자 이상일 때만 채택)
     m = re.search(r"상표[^:]*:\s*([A-Za-z][A-Za-z0-9]+)", seg)
-    if m and m.group(1).lower() not in _NOT_BRAND:
+    if m:
         tok = m.group(1)
-        return BRANDS.get(tok.lower(), tok)
+        if tok.lower() in BRANDS:
+            return BRANDS[tok.lower()]
+        if tok.lower() not in _NOT_BRAND and len(tok) >= 4:
+            return tok
+    # 키워드 검색(단어경계로 오탐 방지: 'ts'가 'results' 안에 걸리지 않도록)
     for key, name in BRANDS.items():
-        if key.strip() and key in low:
+        k = key.strip()
+        if k and re.search(r"\b" + re.escape(k) + r"\b", low):
             return name
     return ""
+
+
+def _valid_impl(tooth, dia, length):
+    """유효 치식(FDI 11~48)과 임상적으로 그럴듯한 규격만 통과."""
+    if not (11 <= tooth <= 48):
+        return False
+    try:
+        d, l = float(dia), float(length)
+    except (TypeError, ValueError):
+        return False
+    return 2.5 <= d <= 7.0 and 5.0 <= l <= 16.0
 
 
 def parse_specs(text: str):
@@ -89,21 +114,20 @@ def parse_specs(text: str):
     노트에서 상세규격(직경·길이)이 있는 임플란트 목록.
     반환: {치아번호: {diameter, length, brand}}
     치아번호 위치마다 뒤쪽 창(window)을 잘라 규격을 추출한다. 다치아 공유 규격도 처리.
+    유효 치식·규격 범위를 벗어나면(오탐) 버린다.
     """
     text = text.replace("_x000D_", "")
     out = {}
-    # 그룹형 다치아: "#45 47 ... (상표: ... 4mm X 8.5mm)" → 45,47 에 같은 규격
     for m in _TOOTH.finditer(text):
         tooth = int(m.group(1))
         start = m.end()
         window = text[start:start + 90]
         cut = _SEG_CUT.search(window)
         seg = window[:cut.start()] if cut else window
-        # 규격을 못 찾으면 창을 조금 더 넓혀 (뒤에 붙는 경우)
         dia, length = _extract_dims(seg)
         if not dia:
             dia, length = _extract_dims(window)
-        if dia and length:
+        if dia and length and _valid_impl(tooth, dia, length):
             brand_seg = text[max(0, m.start() - 40):start + 60]
             out.setdefault(tooth, {"diameter": dia, "length": length,
                                    "brand": _brand_in(brand_seg)})
@@ -115,22 +139,14 @@ def find_brand(text: str) -> str:
 
 
 def graft_material(text: str) -> str:
-    """수술 노트에서 사용된 골이식 재료. 못 찾으면 ''(=이식 안 함으로 간주)."""
-    text = text.replace("_x000D_", "")
-    parts = []
-    # "bone 상표명: XXX / membrane 상표명: YYY"
-    for label in ("bone", "membrane"):
-        m = re.search(label + r"[^:]{0,6}:\s*([^/)\n]+)", text, re.I)
-        if m:
-            v = m.group(1).strip(" .")
-            if v and not v.lower().startswith("membrane"):
-                parts.append(f"{label}: {v[:30]}")
-    low = text.lower()
-    for kw in GRAFT_PRODUCTS:
-        if kw.lower() in low and not any(kw.lower() in p.lower() for p in parts):
-            parts.append(kw)
-    # 중복/정형문구 정리
-    return " / ".join(dict.fromkeys(parts))
+    """수술 노트에서 사용된 골이식 재료(알려진 재료명만). 못 찾으면 ''(=이식 안 함).
+    자유 텍스트를 긁지 않아 '2. Local anesthesia' 같은 오염이 없다."""
+    low = text.replace("_x000D_", "").lower()
+    found = []
+    for kw, disp in _GRAFT_MAP.items():
+        if kw in low and disp not in found:
+            found.append(disp)
+    return " / ".join(found)
 
 
 def has_gbr(text: str) -> bool:
